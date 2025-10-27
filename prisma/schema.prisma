@@ -1,0 +1,154 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String            @id @default(cuid())
+  username       String            @unique
+  email          String            @unique
+  password       String
+  role           String            @default("user")
+  credits        Int               @default(0)
+  personalMobile String?
+  displayName    String?
+  timezone       String?
+  language       String?
+  createdAt      DateTime          @default(now())
+  lastLogin      DateTime?
+  isActive       Boolean           @default(true)
+  apiUsage       ApiUsage[]
+  contacts       Contact[]
+  inboxMessages  InboxMessage[]
+  mediaFiles     MediaFile[]
+  templates      MessageTemplate[]
+  messages       Message[]
+  rules          Rule[]
+  systemStatus   SystemStatus[]
+
+  @@map("users")
+}
+
+model Message {
+  id           String    @id @default(cuid())
+  userId       String
+  to           String
+  from         String?
+  content      String
+  type         String    @default("sms")
+  status       String    @default("sent")
+  credits      Int       @default(0)
+  isTemplate   Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  sentAt       DateTime?
+  deliveredAt  DateTime?
+  scheduledAt  DateTime?
+  templateName String?
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+model Contact {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  phoneNumber String
+  email       String?
+  category    String   @default("personal")
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("contacts")
+}
+
+model MessageTemplate {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  content   String
+  category  String   @default("personal")
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("message_templates")
+}
+
+model Rule {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  condition String
+  action    String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("rules")
+}
+
+model InboxMessage {
+  id         String   @id @default(cuid())
+  userId     String
+  from       String
+  to         String
+  subject    String?
+  content    String
+  type       String   @default("sms")
+  receivedAt DateTime @default(now())
+  read       Boolean  @default(false)
+  folder     String   @default("personal")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("inbox_messages")
+}
+
+model MediaFile {
+  id           String   @id @default(cuid())
+  userId       String
+  filename     String
+  originalName String
+  size         Int
+  type         String
+  url          String
+  uploadedAt   DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("media_files")
+}
+
+model SystemStatus {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  message   String
+  timestamp DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("system_status")
+}
+
+model ApiUsage {
+  id           String   @id @default(cuid())
+  userId       String?
+  endpoint     String
+  method       String
+  statusCode   Int
+  responseTime Int
+  timestamp    DateTime @default(now())
+  user         User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("api_usage")
+}
+
+model ActiveSession {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  lastActivity DateTime @default(now())
+
+  @@map("active_sessions")
+}
