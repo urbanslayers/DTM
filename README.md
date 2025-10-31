@@ -337,12 +337,6 @@ TELSTRA_CLIENT_SECRET=your_production_client_secret
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🆘 Support
-
-For support and questions:
-- Create an issue in the repository
-- Contact the development team
-- Check the help dialog in the application (Ctrl+H)
 
 ## 🔄 Changelog
 
