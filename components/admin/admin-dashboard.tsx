@@ -5,17 +5,19 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Users, MessageSquare, TrendingUp, AlertTriangle, Activity, BarChart3, Settings, Moon, Sun } from "lucide-react"
+import { Users, MessageSquare, TrendingUp, AlertTriangle, Activity, BarChart3, Settings, Moon, Sun, Bell } from "lucide-react"
 import { UserManagement } from "./user-management"
 import { AnalyticsDashboard } from "./analytics-dashboard"
 import { UsageMonitoring } from "./usage-monitoring"
-import { RealTimeAlerts } from "./real-time-alerts"
+// import { RealTimeAlerts } from "./real-time-alerts" // WebSocket server not implemented
 import { LiveMetrics } from "./live-metrics"
 import type { Analytics } from "@/lib/types"
 import { useRouter } from "next/navigation"
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { useTheme } from "next-themes"
+import { authService } from "@/lib/auth"
+import { reportsService } from "@/lib/reports-service"
 
 export function AdminDashboard() {
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
@@ -26,21 +28,40 @@ export function AdminDashboard() {
   const [reports, setReports] = useState<any[]>([])
   const [reportsLoading, setReportsLoading] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
+  const [currentUser, setCurrentUser] = useState(authService.getCurrentUser())
 
   useEffect(() => {
     loadAnalytics()
   }, [])
 
   const loadAnalytics = async () => {
+    if (!currentUser) {
+      setLoading(false)
+      return
+    }
+
+    // Check if user is admin
+    if (currentUser.role !== 'admin') {
+      console.error("Access denied: Admin privileges required")
+      setLoading(false)
+      return
+    }
+
     try {
       const response = await fetch("/api/admin/analytics?period=7d", {
         headers: {
-          Authorization: "Bearer admin_token",
+          Authorization: `Bearer user_${currentUser.id}`,
         },
       })
       if (response.ok) {
         const data = await response.json()
         setAnalytics(data)
+      } else if (response.status === 401) {
+        console.error("Authentication failed for admin dashboard")
+        // Redirect to home or show login
+        router.push("/")
+      } else {
+        console.error("Failed to load analytics:", response.statusText)
       }
     } catch (error) {
       console.error("Failed to load analytics:", error)
@@ -52,8 +73,8 @@ export function AdminDashboard() {
   const fetchReports = async () => {
     setReportsLoading(true)
     try {
-      const response = await fetch("/api/admin/reports")
-      const data = await response.json()
+      const data = await reportsService.getAllReports()
+      // reportsService returns an array or an object with .reports
       setReports(Array.isArray(data) ? data : data.reports || [])
     } catch (e) {
       setReports([])
@@ -62,10 +83,58 @@ export function AdminDashboard() {
     }
   }
 
+  const createReport = async (opts?: { startDate?: string; endDate?: string }) => {
+    setReportsLoading(true)
+    try {
+      // Default to last 90 days (inclusive)
+      const end = opts?.endDate ? new Date(opts.endDate) : new Date()
+      const start = opts?.startDate ? new Date(opts.startDate) : new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
+
+      const params = {
+        startDate: start.toISOString().substring(0, 10),
+        endDate: end.toISOString().substring(0, 10),
+      }
+
+      const created = await reportsService.createReport(params)
+      // If the API queues the report, refresh the list to show it
+      await fetchReports()
+
+      // Optionally show a basic alert with the queued report id
+      const id = created?.reportId || created?.id
+      if (id) {
+        alert(`Report queued (id: ${id})`)
+      } else {
+        alert('Report request submitted')
+      }
+    } catch (err) {
+      console.error('Failed to create report', err)
+      alert('Failed to create report')
+    } finally {
+      setReportsLoading(false)
+      setShowCreateDialog(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500 dark:border-purple-400"></div>
+      </div>
+    )
+  }
+
+  // Check if user is admin
+  if (!currentUser || currentUser.role !== 'admin') {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <AlertTriangle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Access Denied</h1>
+          <p className="text-gray-600 dark:text-gray-400 mb-4">You need administrator privileges to access this page.</p>
+          <Button onClick={() => router.push("/")} className="bg-purple-600 hover:bg-purple-700">
+            Return Home
+          </Button>
+        </div>
       </div>
     )
   }
@@ -80,7 +149,10 @@ export function AdminDashboard() {
             <p className="text-purple-100">Desktop Messaging Administration</p>
           </div>
           <div className="flex items-center gap-3">
-            <RealTimeAlerts />
+            {/* Notifications placeholder - WebSocket not implemented yet */}
+            <Button variant="outline" size="sm" className="text-white hover:bg-white/20" disabled>
+              <Bell className="w-4 h-4" />
+            </Button>
             {/* Dark mode toggle */}
             <Button
               variant="ghost"
@@ -99,7 +171,16 @@ export function AdminDashboard() {
             >
               Home
             </Button>
-            <Button variant="secondary" className="flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white border-white/20">
+            <Button
+              variant="secondary"
+              className="flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white border-white/20"
+              onClick={() => {
+                // For now, redirect to user settings since admin-specific settings aren't implemented yet
+                // In a real app, this would open an admin settings dialog
+                alert("Redirecting to user settings...");
+                // This would be better as a proper redirect or settings dialog
+              }}
+            >
               <Settings className="w-4 h-4" />
               Settings
             </Button>
@@ -294,6 +375,7 @@ export function AdminDashboard() {
                         <TableHead className="text-gray-900 dark:text-gray-100">Status</TableHead>
                         <TableHead className="text-gray-900 dark:text-gray-100">Created</TableHead>
                         <TableHead className="text-gray-900 dark:text-gray-100">Type</TableHead>
+                        <TableHead className="text-gray-900 dark:text-gray-100">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -303,6 +385,21 @@ export function AdminDashboard() {
                           <TableCell className="text-gray-900 dark:text-gray-100">{report.status || "-"}</TableCell>
                           <TableCell className="text-gray-900 dark:text-gray-100">{report.createdAt ? new Date(report.createdAt).toLocaleString() : "-"}</TableCell>
                           <TableCell className="text-gray-900 dark:text-gray-100">{report.type || "-"}</TableCell>
+                          <TableCell className="text-gray-900 dark:text-gray-100">
+                            {/* Download link - proxies to new server route which returns JSON or a file download */}
+                            {report.id || report.reportId ? (
+                              <a
+                                href={`/api/messaging/reports/${report.id || report.reportId}`}
+                                className="text-blue-600 hover:underline"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                Download
+                              </a>
+                            ) : (
+                              <span className="text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -318,7 +415,10 @@ export function AdminDashboard() {
                     {/* TODO: Add form fields for report creation */}
                     <div className="text-muted-foreground">Report creation form coming soon.</div>
                     <DialogFooter>
-                      <Button onClick={() => setShowCreateDialog(false)} type="button">Close</Button>
+                      <div className="flex items-center gap-2">
+                        <Button onClick={() => createReport()} type="button">Create Report (last 90 days)</Button>
+                        <Button onClick={() => setShowCreateDialog(false)} type="button">Close</Button>
+                      </div>
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>

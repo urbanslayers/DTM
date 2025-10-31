@@ -79,20 +79,24 @@ class AuthService {
   }
 
   async updateUser(updates: Partial<User>): Promise<boolean> {
-    if (!this.currentUser) return false
+    // Ensure we have the current user available. The UI may store user data in
+    // sessionStorage/localStorage and not have initialized `this.currentUser`.
+    const stored = this.getCurrentUser()
+    if (!stored) return false
 
     try {
-      const response = await fetch(`/api/admin/users/${this.currentUser.id}`, {
+      const response = await fetch('/api/profile', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer user_${this.currentUser.id}`,
+          'Authorization': `Bearer user_${stored.id}`,
         },
         body: JSON.stringify(updates),
       })
 
       if (response.ok) {
         const updatedUser = await response.json()
+        // Keep internal cache in sync
         this.currentUser = updatedUser
 
         // Update browser storage
@@ -103,11 +107,11 @@ class AuthService {
 
         return true
       }
+      return false
     } catch (error) {
-      console.error('[AUTH] Update user failed:', error)
+      console.error('[AUTH] Error updating user:', error)
+      return false
     }
-
-    return false
   }
 
   isAuthenticated(): boolean {

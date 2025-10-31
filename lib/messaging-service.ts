@@ -2,6 +2,12 @@ import type { Message } from "./types"
 import { authService } from "./auth"
 
 class MessagingService {
+  private _pollTimer: number | null = null
+  private _isPolling: boolean = false
+  private _pollIntervalMs: number = 30 * 1000 // default 30s
+  private _minIntervalMs: number = 15 * 1000 // don't poll faster than 15s
+  private _maxIntervalMs: number = 5 * 60 * 1000 // backoff max 5 minutes
+  private _snoozeUntil: number | null = null // timestamp till which polling is paused
   async sendMessage(
     to: string[],
     content: string,
@@ -95,6 +101,8 @@ class MessagingService {
       // For immediate messages, save to database via API
       if (!scheduledAt) {
         try {
+          // Include the sender's number when saving to DB so the messages API can
+          // reliably match sent messages to the user's allocated/send-from numbers.
           await fetch('/api/messaging/messages', {
             method: 'POST',
             headers: {
@@ -110,8 +118,25 @@ class MessagingService {
               isTemplate: !!templateName,
               templateName,
               userId: user.id,
+              from: user.personalMobile || null,
             }),
           });
+        
+          // After saving the sent message, trigger a provider sync to pick up any
+          // provider-side records (e.g. provider inbox echoes or replies) so the
+          // inbox view updates promptly. Fire-and-forget but attempt to call.
+          try {
+            fetch('/api/messaging/sync-provider', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer user_${user.id}`,
+              },
+              body: JSON.stringify({ userId: user.id, limit: 50 }),
+            }).catch((e) => console.warn('[MessagingService] sync-provider call failed', e))
+          } catch (e) {
+            console.warn('[MessagingService] sync-provider invocation failed', e)
+          }
         } catch (error) {
           console.error("[MessagingService] Failed to save message to database:", error);
         }
@@ -243,10 +268,10 @@ class MessagingService {
       .filter((num) => num.length > 0)
   }
 
-  async getSentMessages(): Promise<Message[]> {
+  async getSentMessages(offset: number = 0, limit: number = 50): Promise<{ messages: Message[]; totalCount: number }> {
     try {
       const user = authService.getCurrentUser()
-      if (!user) return []
+      if (!user) return { messages: [], totalCount: 0 }
 
       // Get user's allocated phone numbers (personal mobile + company contacts)
       const allocatedNumbers = await this.getAllocatedPhoneNumbers(user.id)
@@ -255,6 +280,9 @@ class MessagingService {
         userId: user.id,
         status: 'sent,delivered,failed',
         phoneNumbers: allocatedNumbers.join(','),
+        matchFromOnly: 'true',
+        offset: offset.toString(),
+        limit: limit.toString(),
       });
 
       const response = await fetch(`/api/messaging/messages?${params.toString()}`, {
@@ -265,16 +293,169 @@ class MessagingService {
 
       if (response.ok) {
         const data = await response.json();
-        return data.messages || [];
+        // API now returns { messages: [...], totalCount }
+        return { messages: data.messages || [], totalCount: Number(data.totalCount || (data.messages || []).length) };
       }
     } catch (error) {
       console.error("[MessagingService] Error getting sent messages:", error);
     }
 
-    return []
+    return { messages: [], totalCount: 0 }
   }
 
-  async getScheduledMessages(): Promise<Message[]> {
+  /**
+   * Start polling sent/received messages while the app is idle.
+   * - onUpdate is called each successful poll with { sent?: Message[], inbox?: any[] }
+   * - options.intervalMs: preferred interval (will be clamped between min/max)
+   * - options.fetchInbox/fetchSent: booleans to enable specific fetches
+   */
+  startPollingMessages(options?: {
+    onUpdate?: (payload: { sent?: Message[]; inbox?: any[] }) => void
+    intervalMs?: number
+    fetchSent?: boolean
+    fetchInbox?: boolean
+  }) {
+    if (this._isPolling) return
+    this._isPolling = true
+
+    const onUpdate = options?.onUpdate
+    const fetchSent = options?.fetchSent !== false
+    const fetchInbox = options?.fetchInbox !== false
+
+    if (options?.intervalMs) {
+      const v = Math.max(this._minIntervalMs, Math.min(this._maxIntervalMs, options.intervalMs))
+      this._pollIntervalMs = v
+    }
+
+    // Kick off the poll loop
+    const pollOnce = async () => {
+      if (!this._isPolling) return
+
+      // If snoozed due to Retry-After, skip until expiry
+      if (this._snoozeUntil && Date.now() < this._snoozeUntil) {
+        const waitMs = this._snoozeUntil - Date.now()
+        this._pollTimer = window.setTimeout(pollOnce, Math.max(waitMs, this._minIntervalMs))
+        return
+      }
+
+      try {
+        const user = authService.getCurrentUser()
+        if (!user) {
+          // No user; stop polling
+          this.stopPollingMessages()
+          return
+        }
+
+        const results: { sent?: Message[]; inbox?: any[] } = {}
+
+        // Fetch sent messages with raw response handling so we can read headers
+        if (fetchSent) {
+          try {
+            const allocatedNumbers = await this.getAllocatedPhoneNumbers(user.id)
+            const params = new URLSearchParams({
+              userId: user.id,
+              status: 'sent,delivered,failed',
+              phoneNumbers: allocatedNumbers.join(','),
+              matchFromOnly: 'true',
+              offset: '0',
+              limit: '50',
+            })
+
+            const response = await fetch(`/api/messaging/messages?${params.toString()}`, {
+              headers: { Authorization: `Bearer user_${user.id}` },
+            })
+
+            if (response.status === 429) {
+              const retryAfter = parseInt(response.headers.get('Retry-After') || '0', 10)
+              if (retryAfter > 0) {
+                // Respect server suggested retry
+                this._snoozeUntil = Date.now() + retryAfter * 1000
+                console.warn('[MessagingService][poll] 429 received, snoozing until', new Date(this._snoozeUntil))
+              } else {
+                // Exponential backoff
+                this._pollIntervalMs = Math.min(this._pollIntervalMs * 2, this._maxIntervalMs)
+                console.warn('[MessagingService][poll] 429 received, backing off to', this._pollIntervalMs)
+              }
+            } else if (response.ok) {
+              const data = await response.json()
+              results.sent = data.messages || []
+              // reset poll interval toward default on success
+              this._pollIntervalMs = Math.max(this._minIntervalMs, Math.min(this._pollIntervalMs, 30 * 1000))
+            } else {
+              console.warn('[MessagingService][poll] Unexpected response', response.status)
+            }
+          } catch (e) {
+            console.warn('[MessagingService][poll] Failed to fetch sent messages', e)
+            // on error, jitter the next interval a bit
+            this._pollIntervalMs = Math.min(this._pollIntervalMs * 1.5, this._maxIntervalMs)
+          }
+        }
+
+        // Fetch inbox
+        if (fetchInbox) {
+          try {
+            // Include userId in the query so the server returns DB-backed inbox messages
+            // (which are sorted by receivedAt desc). If userId is omitted the API falls
+            // back to the Telstra provider which can return a different order.
+            const inboxUrl = `/api/messaging/inbox?userId=${encodeURIComponent(user.id)}&limit=50&filter=all`
+            const response = await fetch(inboxUrl, {
+              headers: { Authorization: `Bearer user_${user.id}` },
+            })
+
+            if (response.status === 429) {
+              const retryAfter = parseInt(response.headers.get('Retry-After') || '0', 10)
+              if (retryAfter > 0) {
+                this._snoozeUntil = Date.now() + retryAfter * 1000
+                console.warn('[MessagingService][poll] Inbox 429 received, snoozing until', new Date(this._snoozeUntil))
+              } else {
+                this._pollIntervalMs = Math.min(this._pollIntervalMs * 2, this._maxIntervalMs)
+                console.warn('[MessagingService][poll] Inbox 429 received, backing off to', this._pollIntervalMs)
+              }
+            } else if (response.ok) {
+              const data = await response.json()
+              results.inbox = data.messages || data.inbox || []
+            } else {
+              console.warn('[MessagingService][poll] Inbox unexpected response', response.status)
+            }
+          } catch (e) {
+            console.warn('[MessagingService][poll] Failed to fetch inbox', e)
+          }
+        }
+
+        // If we got results, call update callback
+        if (onUpdate && (results.sent || results.inbox)) {
+          try {
+            onUpdate(results)
+          } catch (e) {
+            console.warn('[MessagingService][poll] onUpdate handler threw', e)
+          }
+        }
+      } catch (e) {
+        console.error('[MessagingService][poll] Unexpected error', e)
+      } finally {
+        // Schedule next poll respecting current interval (apply a small jitter)
+        if (this._isPolling) {
+          const jitter = Math.floor(Math.random() * 1000)
+          const next = Math.max(this._minIntervalMs, Math.min(this._pollIntervalMs + jitter, this._maxIntervalMs))
+          this._pollTimer = window.setTimeout(pollOnce, next)
+        }
+      }
+    }
+
+    // Start immediately
+    pollOnce().catch((e) => console.warn('[MessagingService] Poll loop start failed', e))
+  }
+
+  stopPollingMessages() {
+    this._isPolling = false
+    if (this._pollTimer) {
+      clearTimeout(this._pollTimer)
+      this._pollTimer = null
+    }
+    this._snoozeUntil = null
+  }
+
+  async getScheduledMessages(offset: number = 0, limit: number = 50): Promise<Message[]> {
     try {
       const user = authService.getCurrentUser()
       if (!user) return []
@@ -286,6 +467,9 @@ class MessagingService {
         userId: user.id,
         status: 'scheduled',
         phoneNumbers: allocatedNumbers.join(','),
+        matchFromOnly: 'true',
+        offset: offset.toString(),
+        limit: limit.toString(),
       });
 
       const response = await fetch(`/api/messaging/messages?${params.toString()}`, {

@@ -1,4 +1,4 @@
-const { db } = require('./lib/database.js');
+const { db } = require('../lib/database.js');
 
 console.log('Testing database update directly...');
 

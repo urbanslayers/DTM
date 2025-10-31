@@ -25,7 +25,7 @@ export function LibraryDialog({ open, onOpenChange, onUseTemplate }: LibraryDial
   const [searchQuery, setSearchQuery] = useState("")
   const [showAddForm, setShowAddForm] = useState(false)
   const [editingTemplate, setEditingTemplate] = useState<MessageTemplate | null>(null)
-  const [activeTab, setActiveTab] = useState("all")
+  const [activeTab, setActiveTab] = useState("templates")
 
   // Form state
   const [formData, setFormData] = useState({
@@ -51,12 +51,34 @@ export function LibraryDialog({ open, onOpenChange, onUseTemplate }: LibraryDial
       return
     }
 
-    const result = await templateService.addTemplate(formData.name, formData.content, formData.category)
+    try {
+      if (editingTemplate) {
+        // Update existing template
+        const result = await templateService.updateTemplate(editingTemplate.id, {
+          name: formData.name,
+          content: formData.content,
+          category: formData.category,
+        })
 
-    if (result) {
-      await loadTemplates()
-      resetForm()
-      setShowAddForm(false)
+        if (result) {
+          await loadTemplates()
+          resetForm()
+          setShowAddForm(false)
+          setEditingTemplate(null)
+        }
+      } else {
+        // Create new template
+        const result = await templateService.addTemplate(formData.name, formData.content, formData.category)
+
+        if (result) {
+          await loadTemplates()
+          resetForm()
+          setShowAddForm(false)
+        }
+      }
+    } catch (error) {
+      console.error("Error saving template:", error)
+      alert("Failed to save template. Please try again.")
     }
   }
 
@@ -81,7 +103,7 @@ export function LibraryDialog({ open, onOpenChange, onUseTemplate }: LibraryDial
       template.content.toLowerCase().includes(searchQuery.toLowerCase())
 
     const matchesTab =
-      activeTab === "all" ||
+      activeTab === "templates" ||
       (activeTab === "company" && template.category === "company") ||
       (activeTab === "personal" && template.category === "personal")
 
@@ -180,12 +202,12 @@ export function LibraryDialog({ open, onOpenChange, onUseTemplate }: LibraryDial
           {/* Template Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="grid w-full grid-cols-3">
-              <TabsTrigger value="all">All ({templates.length})</TabsTrigger>
-              <TabsTrigger value="company">Company ({companyTemplates.length})</TabsTrigger>
-              <TabsTrigger value="personal">Personal ({personalTemplates.length})</TabsTrigger>
+              <TabsTrigger value="templates">Templates ({templates.length})</TabsTrigger>
+              <TabsTrigger value="saved">Saved Messages</TabsTrigger>
+              <TabsTrigger value="media">Media Files</TabsTrigger>
             </TabsList>
 
-            <TabsContent value={activeTab} className="mt-4">
+            <TabsContent value="templates" className="mt-4">
               <ScrollArea className="h-[40vh]">
                 <div className="space-y-3">
                   {filteredTemplates.length === 0 ? (
@@ -233,7 +255,20 @@ export function LibraryDialog({ open, onOpenChange, onUseTemplate }: LibraryDial
                             >
                               <Edit className="w-3 h-3" />
                             </Button>
-                            <Button variant="outline" size="sm">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={async () => {
+                                if (confirm(`Are you sure you want to delete template "${template.name}"?`)) {
+                                  const success = await templateService.deleteTemplate(template.id)
+                                  if (success) {
+                                    await loadTemplates()
+                                  } else {
+                                    alert("Failed to delete template")
+                                  }
+                                }
+                              }}
+                            >
                               <Trash2 className="w-3 h-3" />
                             </Button>
                           </div>
@@ -247,6 +282,24 @@ export function LibraryDialog({ open, onOpenChange, onUseTemplate }: LibraryDial
                   )}
                 </div>
               </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="saved" className="mt-4">
+              <div className="text-center text-gray-500 py-8">
+                <FileText className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                <h3 className="text-lg font-medium mb-2">Saved Messages</h3>
+                <p className="text-sm">Saved messages functionality coming soon!</p>
+                <p className="text-xs text-gray-400 mt-2">Messages you save will appear here for quick access.</p>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="media" className="mt-4">
+              <div className="text-center text-gray-500 py-8">
+                <FileText className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                <h3 className="text-lg font-medium mb-2">Media Files</h3>
+                <p className="text-sm">Media files functionality coming soon!</p>
+                <p className="text-xs text-gray-400 mt-2">Images, videos, and audio files you upload will appear here.</p>
+              </div>
             </TabsContent>
           </Tabs>
         </div>

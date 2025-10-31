@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { inboxService } from "@/lib/inbox-service"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -63,16 +64,32 @@ export function InboxDialog({ open, onOpenChange }: InboxDialogProps) {
       const data = await res.json();
 
       // Database messages have different structure than Telstra messages
-      const dbMessages = (data.messages || []).map((msg: any) => ({
-        id: msg.id,
-        from: msg.from,
-        to: msg.to,
-        subject: msg.subject || undefined,
-        body: msg.content, // Database uses 'content' instead of 'body'
-        receivedAt: new Date(msg.receivedAt),
-        read: msg.read,
-        type: msg.type === 'mms' ? "MMS" : "SMS", // Database uses lowercase
-      }));
+      const dbMessages = (data.messages || []).map((msg: any) => {
+        // Normalize the `to` field: it may be stored as an array or a string
+        let toField: string = ''
+        if (Array.isArray(msg.to)) {
+          toField = msg.to.join(', ')
+        } else if (typeof msg.to === 'string') {
+          toField = msg.to
+        } else if (msg.to && typeof msg.to === 'object') {
+          try {
+            toField = JSON.stringify(msg.to)
+          } catch (e) {
+            toField = String(msg.to)
+          }
+        }
+
+        return {
+          id: msg.id,
+          from: msg.from,
+          to: toField,
+          subject: msg.subject || undefined,
+          body: msg.content, // Database uses 'content' instead of 'body'
+          receivedAt: new Date(msg.receivedAt),
+          read: msg.read,
+          type: msg.type === 'mms' ? "mms" : "sms", // normalize to lowercase
+        }
+      })
 
       // Sort messages by receivedAt in descending order (newest first)
       dbMessages.sort((a: InboxMessage, b: InboxMessage) => {
@@ -110,8 +127,35 @@ export function InboxDialog({ open, onOpenChange }: InboxDialogProps) {
     setIsLoadingMore(false);
   }
 
-  const markAsRead = (messageId: string) => {
+  const markAsRead = async (messageId: string) => {
+    // Optimistic UI update
     setMessages((prev) => prev.map((msg) => (msg.id === messageId ? { ...msg, read: true } : msg)))
+    try {
+      const ok = await inboxService.markAsRead(messageId)
+      if (!ok) {
+        // Revert if API failed
+        setMessages((prev) => prev.map((msg) => (msg.id === messageId ? { ...msg, read: false } : msg)))
+      }
+    } catch (err) {
+      console.warn('Failed to persist markAsRead', err)
+      setMessages((prev) => prev.map((msg) => (msg.id === messageId ? { ...msg, read: false } : msg)))
+    }
+  }
+
+  const markAllAsRead = async () => {
+    if (messages.length === 0) return
+    // Optimistic UI change
+    setMessages((prev) => prev.map((m) => ({ ...m, read: true })))
+    try {
+      const ok = await inboxService.markAllAsRead()
+      if (!ok) {
+        // If it failed, don't change UI
+        setMessages((prev) => prev.map((m) => ({ ...m, read: false })))
+      }
+    } catch (err) {
+      console.warn('Failed to persist markAllAsRead', err)
+      setMessages((prev) => prev.map((m) => ({ ...m, read: false })))
+    }
   }
 
   const deleteMessage = (messageId: string) => {
@@ -164,6 +208,11 @@ export function InboxDialog({ open, onOpenChange }: InboxDialogProps) {
                   <TabsTrigger value="read">Read</TabsTrigger>
                 </TabsList>
               </Tabs>
+              <div className="flex justify-end mt-2">
+                <Button variant="ghost" size="sm" onClick={markAllAsRead} disabled={messages.length === 0}>
+                  Mark all as read
+                </Button>
+              </div>
 
               <ScrollArea className="h-[45vh]">
                 <div className="space-y-2">
@@ -190,8 +239,11 @@ export function InboxDialog({ open, onOpenChange }: InboxDialogProps) {
                             ) : (
                               <Mail className="w-4 h-4 text-blue-600" />
                             )}
-                            <span className="font-medium text-sm">{message.from}</span>
-                            <Badge variant={message.type === "mms" ? "default" : "secondary"}>{message.type.toUpperCase()}</Badge>
+                            <div className="flex flex-col">
+                              <span className="font-medium text-sm">{message.from}</span>
+                              <span className="text-xs text-gray-500">To: {message.to || 'Unknown'}</span>
+                            </div>
+                            <Badge variant={message.type === "mms" ? "default" : "secondary"} className="ml-2">{message.type.toUpperCase()}</Badge>
                           </div>
                           <span className="text-xs text-gray-500">{message.receivedAt.toLocaleTimeString()}</span>
                         </div>

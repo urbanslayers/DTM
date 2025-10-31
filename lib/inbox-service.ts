@@ -2,30 +2,44 @@ import type { InboxMessage } from "./types"
 import { authService } from "./auth"
 
 class InboxService {
-  async getMessages(folder?: "personal" | "company"): Promise<InboxMessage[]> {
+  async getMessages(
+    offset: number = 0,
+    limit: number = 50,
+    folder?: "personal" | "company",
+  ): Promise<{ messages: InboxMessage[]; totalCount: number }> {
     try {
       const user = authService.getCurrentUser()
-      if (!user) return []
+      if (!user) return { messages: [], totalCount: 0 }
 
-      const url = folder
-        ? `/api/messaging/inbox?userId=${user.id}&folder=${folder}`
-        : `/api/messaging/inbox?userId=${user.id}`
+      const params = new URLSearchParams({
+        userId: user.id,
+        offset: offset.toString(),
+        limit: limit.toString(),
+      })
+
+      if (folder) {
+        params.set('folder', folder)
+      }
+
+      const url = `/api/messaging/inbox?${params.toString()}`
 
       const response = await fetch(url, {
         headers: {
-          'Authorization': `Bearer user_${user.id}`,
+          Authorization: `Bearer user_${user.id}`,
         },
-      });
+      })
 
       if (response.ok) {
-        const data = await response.json();
-        return data.messages || [];
+        const data = await response.json()
+        const messages = data.messages || []
+        const totalCount = Number(data.totalCount ?? data.paging?.totalCount ?? messages.length)
+        return { messages, totalCount }
       }
     } catch (error) {
-      console.error("[InboxService] Error getting messages:", error);
+      console.error("[InboxService] Error getting messages:", error)
     }
 
-    return []
+    return { messages: [], totalCount: 0 }
   }
 
   async markAsRead(messageId: string): Promise<boolean> {
@@ -43,6 +57,25 @@ class InboxService {
       return response.ok;
     } catch (error) {
       console.error("[InboxService] Error marking message as read:", error);
+      return false
+    }
+  }
+
+  async markAllAsRead(): Promise<boolean> {
+    try {
+      const user = authService.getCurrentUser()
+      if (!user) return false
+
+      const response = await fetch(`/api/messaging/inbox/mark-all-read`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer user_${user.id}`,
+        },
+      });
+
+      return response.ok;
+    } catch (error) {
+      console.error("[InboxService] Error marking all messages as read:", error);
       return false
     }
   }
@@ -68,7 +101,7 @@ class InboxService {
 
   async searchMessages(query: string): Promise<InboxMessage[]> {
     try {
-      const messages = await this.getMessages()
+      const { messages } = await this.getMessages()
       const lowercaseQuery = query.toLowerCase()
 
       return messages.filter(
@@ -78,17 +111,17 @@ class InboxService {
           (msg.subject && msg.subject.toLowerCase().includes(lowercaseQuery)),
       )
     } catch (error) {
-      console.error("[InboxService] Error searching messages:", error);
+      console.error("[InboxService] Error searching messages:", error)
       return []
     }
   }
 
   async getUnreadCount(): Promise<number> {
     try {
-      const messages = await this.getMessages()
+      const { messages } = await this.getMessages()
       return messages.filter((msg) => !msg.read).length
     } catch (error) {
-      console.error("[InboxService] Error getting unread count:", error);
+      console.error("[InboxService] Error getting unread count:", error)
       return 0
     }
   }

@@ -1,4 +1,24 @@
 class TelstraAPI {
+  // ...existing code...
+
+  async getVirtualNumbers(options?: { limit?: number; offset?: number }): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const params = new URLSearchParams();
+      if (options?.limit) params.append("limit", options.limit.toString());
+      if (options?.offset) params.append("offset", options.offset.toString());
+
+      const url = `${this.baseURL}/messaging/v3/virtualNumbers${params.toString() ? `?${params}` : ""}`;
+      const { response, data } = await this.makeAuthenticatedRequest(url, { method: "GET" });
+
+      if (response.ok) {
+        return { success: true, data };
+      } else {
+        return { success: false, error: data?.error_description || "Failed to get virtual numbers", data };
+      }
+    } catch (error) {
+      return { success: false, error: "Network error" };
+    }
+  }
   private baseURL = "https://products.api.telstra.com"
   private accessToken: string | null = null
   private tokenExpiry: number | null = null
@@ -15,6 +35,30 @@ class TelstraAPI {
     }
     // Client-side: use relative URLs
     return ''
+  }
+
+  // Redact sensitive header values for logging (e.g. Authorization)
+  private sanitizeHeaders(headers: Record<string, any>) {
+    try {
+      const out: Record<string, any> = {}
+      for (const [k, v] of Object.entries(headers || {})) {
+        const key = String(k)
+        if (key.toLowerCase() === 'authorization') {
+          if (typeof v === 'string') {
+            // Keep the scheme (e.g. Bearer) but redact the token
+            const m = v.match(/^(Bearer)\s+(.*)$/i)
+            out[k] = m ? `${m[1]} <REDACTED>` : '<REDACTED>'
+          } else {
+            out[k] = '<REDACTED>'
+          }
+        } else {
+          out[k] = v
+        }
+      }
+      return out
+    } catch (e) {
+      return { error: 'failed to sanitize headers' }
+    }
   }
 
   async authenticate(): Promise<boolean> {
@@ -34,48 +78,78 @@ class TelstraAPI {
       this.tokenExpiry = null
 
       console.log("[TelstraAPI] Attempting authentication via internal API route")
+        // If we're running server-side, prefer calling the token endpoint directly
+        // using the configured client credentials to avoid relying on an internal
+        // http fetch to our own /api route (which is not available during build).
+        if (typeof window === 'undefined' && process.env.TELSTRA_CLIENT_ID && process.env.TELSTRA_CLIENT_SECRET) {
+          try {
+            const params = new URLSearchParams()
+            params.append('grant_type', 'client_credentials')
+            params.append('client_id', String(process.env.TELSTRA_CLIENT_ID))
+            params.append('client_secret', String(process.env.TELSTRA_CLIENT_SECRET))
+            params.append('scope', 'free-trial-numbers:read free-trial-numbers:write messages:read messages:write virtual-numbers:read virtual-numbers:write reports:read reports:write')
 
-      // Use absolute URL for server-side, relative for client-side
-      const authUrl = typeof window === 'undefined'
-        ? `${this.getBaseUrl()}/api/auth/token`
-        : "/api/auth/token"
+            const telstraRes = await fetch('https://products.api.telstra.com/v2/oauth/token', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0',
+              },
+              body: params,
+            })
 
-      // Only add unique identifier if we actually need to force a fresh token
-      const needsFreshToken = !this.accessToken || this.isTokenExpired()
-      const uniqueId = needsFreshToken ? `force_new_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : ''
+            const data = await telstraRes.json()
+            console.log('[TelstraAPI] Direct token fetch status:', telstraRes.status)
+            // If successful, set token and expiry
+            if (telstraRes.ok && data.access_token) {
+              this.accessToken = data.access_token
+              this.tokenExpiry = Date.now() + (data.expires_in * 1000) - (5 * 60 * 1000)
+              console.log('[TelstraAPI] ✅ Direct authentication successful, token set')
+              return true
+            }
+            console.error('[TelstraAPI] Direct authentication failed:', data)
+            return false
+          } catch (err) {
+            console.warn('[TelstraAPI] Direct token fetch failed, falling back to internal route fetch', err)
+            // fall through to try internal fetch if direct call fails
+          }
+        }
 
-      const fetchUrl = uniqueId ? `${authUrl}?_fresh=${uniqueId}` : authUrl
+        // Use absolute URL for server-side, relative for client-side
+        const authUrl = typeof window === 'undefined'
+          ? `${this.getBaseUrl()}/api/auth/token`
+          : '/api/auth/token'
 
-      const response = await fetch(fetchUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "Cache-Control": "no-cache, no-store, must-revalidate",
-          "Pragma": "no-cache"
-        },
-      })
+        // Only add unique identifier if we actually need to force a fresh token
+        const needsFreshToken = !this.accessToken || this.isTokenExpired()
+        const uniqueId = needsFreshToken ? `force_new_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : ''
 
-      const data = await response.json()
-      console.log("[TelstraAPI] Auth token fetch status:", response.status)
-      console.log("[TelstraAPI] Auth token fetch body:", data)
+        const fetchUrl = uniqueId ? `${authUrl}?_fresh=${uniqueId}` : authUrl
 
-      if (response.ok && data.access_token) {
-        this.accessToken = data.access_token
-        // Store expiry time (subtract 5 minutes buffer to refresh early)
-        this.tokenExpiry = Date.now() + (data.expires_in * 1000) - (5 * 60 * 1000)
-        console.log("[TelstraAPI] ✅ Authentication successful, NEW token expires at:", new Date(this.tokenExpiry))
-        console.log("[TelstraAPI] 🔑 NEW TOKEN VALUE:", this.accessToken)
-        console.log("[TelstraAPI] Token details:", {
-          tokenLength: this.accessToken ? String(this.accessToken).length : 0,
-          expiresIn: data.expires_in,
-          currentTime: new Date(Date.now()),
-          expiryTime: new Date(this.tokenExpiry),
-          timeUntilExpiry: Math.round((this.tokenExpiry - Date.now()) / 1000)
+        const response = await fetch(fetchUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache'
+          },
         })
-        return true
-      }
-      console.error("[TelstraAPI] Authentication failed with status:", response.status)
-      return false
+
+        const data = await response.json()
+        console.log('[TelstraAPI] Auth token fetch status:', response.status)
+        console.log('[TelstraAPI] Auth token fetch body:', data)
+
+        if (response.ok && data.access_token) {
+          this.accessToken = data.access_token
+          // Store expiry time (subtract 5 minutes buffer to refresh early)
+          this.tokenExpiry = Date.now() + (data.expires_in * 1000) - (5 * 60 * 1000)
+          console.log('[TelstraAPI] ✅ Authentication successful, NEW token expires at:', new Date(this.tokenExpiry))
+          return true
+        }
+        console.error('[TelstraAPI] Authentication failed with status:', response.status)
+        return false
     } catch (error) {
       console.error("Telstra API authentication failed:", error)
       return false
@@ -105,7 +179,7 @@ class TelstraAPI {
     if (this.accessToken && !this.isTokenExpired()) {
       console.log("[TelstraAPI] ✅ Using existing valid token");
       const headers = {
-        "Telstra-api-version": "2.0.0",
+         "Telstra-api-version": "2.0.0",
         "Content-Language": "en-au",
         "Authorization": `Bearer ${this.accessToken}`,
         "Content-Type": "application/json",
@@ -142,8 +216,9 @@ class TelstraAPI {
     options: RequestInit = {}
   ): Promise<{ response: Response; data: any }> {
     const authHeaders = await this.getAuthHeaders();
-    console.log("[TelstraAPI] Making authenticated request to:", url);
-    console.log("[TelstraAPI] Request headers:", JSON.stringify(authHeaders, null, 2));
+  console.log("[TelstraAPI] Making authenticated request to:", url);
+  // Sanitize headers before logging to avoid exposing sensitive tokens
+  console.log("[TelstraAPI] Request headers:", JSON.stringify(this.sanitizeHeaders(authHeaders), null, 2));
 
     const response = await fetch(url, {
       ...options,

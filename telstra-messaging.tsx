@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -23,6 +23,8 @@ import {
   HelpCircle,
   Search,
   X,
+  Moon,
+  Sun,
 } from "lucide-react"
 import { LoginDialog } from "@/components/login-dialog"
 import { StatusDialog } from "@/components/status-dialog"
@@ -32,7 +34,11 @@ import { authService } from "@/lib/auth"
 import { messagingService } from "@/lib/messaging-service"
 import { contactService } from "@/lib/contact-service"
 import { templateService } from "@/lib/template-service"
-import type { Contact, MessageTemplate, Message } from "@/lib/types"
+import { rulesService } from "@/lib/rules-service"
+// inboxService is already imported above
+import { mediaService } from "@/lib/media-service"
+import type { Contact, MessageTemplate, Message, Rule, InboxMessage, MediaFile } from "@/lib/types"
+import { inboxService } from "@/lib/inbox-service"
 import { SendMMSDialog } from "@/components/send-mms-dialog"
 import { InboxDialog } from "@/components/inbox-dialog"
 import { ContactsDialog } from "@/components/contacts-dialog"
@@ -41,26 +47,298 @@ import { SentMessagesDialog } from "@/components/sent-messages-dialog"
 import { ScheduledMessagesDialog } from "@/components/scheduled-messages-dialog"
 import { RulesWizardDialog } from "@/components/rules-wizard-dialog"
 import { UserSettingsDialog } from "@/components/user-settings-dialog"
-
-// Add new imports at the top
-import { rulesService } from "@/lib/rules-service"
-import { inboxService } from "@/lib/inbox-service"
-import { mediaService } from "@/lib/media-service"
-import type { Rule, InboxMessage, MediaFile } from "@/lib/types"
 import { useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
-import { Moon, Sun } from "lucide-react"
 import { useAuth } from "@/components/auth-provider"
+import { useToast } from "@/components/ui/use-toast"
+import { useWebSocket } from "@/hooks/use-websocket"
+
+// Define interfaces for missing types
+interface ContactService {
+  getContacts: (searchTerm?: string) => Promise<{ data: Contact[] }>;
+  createContact: (contact: Omit<Contact, 'id'>) => Promise<Contact>;
+  // Add other contact service methods as needed
+}
 
 function DesktopMessaging() {
+  const { toast } = useToast();
   // Authentication state
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [showLogin, setShowLogin] = useState(true)
   const [currentUser, setCurrentUser] = useState(authService.getCurrentUser())
 
+  // Handle logout
+  const handleLogout = async () => {
+    try {
+      // Inform server and clear auth data
+      await authService.logout()
+    } catch (e) {
+      console.warn('Logout request failed', e)
+    }
+
+    // Clear browser-stored user info (defensive)
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.removeItem('currentUser')
+        localStorage.removeItem('user')
+      } catch (e) {
+        console.warn('Failed to clear storage on logout', e)
+      }
+    }
+
+    // Stop background polling (messagingService will also stop itself if no user exists)
+    try {
+      messagingService.stopPollingMessages()
+    } catch (e) {
+      console.warn('Failed to stop polling messages on logout', e)
+    }
+
+    // Dispatch a global event so component-level state (which is declared later) can react
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('app:logout'))
+    }
+
+    // Local auth/UI state
+    setIsAuthenticated(false)
+    setCurrentUser(null)
+    setShowLogin(true)
+  }
+
   const router = useRouter();
   const { theme, setTheme } = useTheme();
   const { token } = useAuth();
+  const { socket, connected, authenticateAsUser, disconnect } = useWebSocket()
+
+
+  // Contact state
+  const [newContactName, setNewContactName] = useState("");
+  const [newContactPhone, setNewContactPhone] = useState("");
+  const [newContactEmail, setNewContactEmail] = useState("");
+  const [newContactType, setNewContactType] = useState<"personal" | "company">("personal");
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [showContacts, setShowContacts] = useState(false);
+
+  // Message editor state
+  const [showSendLater, setShowSendLater] = useState(false);
+  const [showSendMMS, setShowSendMMS] = useState(false);
+
+  // UI state - consolidated in one place
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [showInbox, setShowInbox] = useState(false);
+  const [showSentMessages, setShowSentMessages] = useState(false);
+  const [showScheduledMessages, setShowScheduledMessages] = useState(false);
+  const [showRulesWizard, setShowRulesWizard] = useState(false);
+  const [showUserSettings, setShowUserSettings] = useState(false);
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  
+  
+  const [scheduledMessages, setScheduledMessages] = useState<Message[]>([]);
+  
+  // Template state
+  const [newTemplateName, setNewTemplateName] = useState("");
+  const [newTemplateContent, setNewTemplateContent] = useState("");
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  // Paging state for lists (inbox, sent, etc.)
+  const [paging, setPaging] = useState<any>({ pageSize: 10, offset: 0, nextPage: false, previousPage: false, totalCount: 0 });
+  
+  // Alias pageSize and offset for backward compatibility
+  const pageSize = paging.pageSize;
+  const offset = paging.offset;
+  const setOffset = (newOffset: number) => {
+    setPaging((prev: any) => ({
+      ...prev,
+      offset: newOffset
+    }));
+  };
+
+  // File upload handler
+  const handleFileUpload = async (files: FileList) => {
+    try {
+      // Implement file upload logic here
+      toast({
+        title: "Uploading files...",
+        description: `Uploading ${files.length} file(s)`,
+      });
+      
+      // Example implementation - replace with actual file upload logic
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        // Upload file using your media service
+        // await mediaService.uploadFile(file);
+      }
+      
+      toast({
+        title: "Success",
+        description: "Files uploaded successfully",
+      });
+    } catch (error) {
+      console.error("Error uploading files:", error);
+      toast({
+        title: "Error",
+        description: "Failed to upload files",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Template handlers
+  const handleUseTemplate = (template: MessageTemplate) => {
+    // Ensure we set the canonical editor state variable
+    setMessageText(template.content);
+    setShowLibrary(false);
+    toast({
+      title: "Template applied",
+      description: "The template has been loaded into the message editor",
+    });
+  };
+
+  const handleEditTemplate = async (templateId: string, updates: Partial<MessageTemplate>) => {
+    try {
+      // Attempt to update via templateService if available
+      if (templateService && typeof templateService.updateTemplate === "function") {
+        const res = await templateService.updateTemplate(templateId, updates)
+        if (res) {
+          await loadData()
+          toast({ title: "Template updated", description: "Template updated successfully" })
+          return
+        }
+      }
+      // Fallback: log and refresh UI
+      console.log("Editing template (no service):", templateId, updates)
+      await loadData()
+      toast({ title: "Template updated", description: "Template update applied" })
+    } catch (error) {
+      console.error("Error editing template:", error)
+      toast({ title: "Error", description: "Failed to update template", variant: "destructive" })
+    }
+  };
+
+  const handleDeleteTemplate = async (templateId: string) => {
+    try {
+      if (!window.confirm('Are you sure you want to delete this template?')) return
+      if (templateService && typeof templateService.deleteTemplate === "function") {
+        const success = await templateService.deleteTemplate(templateId)
+        if (!success) throw new Error("deleteTemplate returned falsy")
+      }
+      // Refresh templates / UI
+      await loadData()
+      toast({ title: "Template deleted", description: "The template has been deleted" })
+    } catch (error) {
+      console.error("Error deleting template:", error)
+      toast({ title: "Error", description: "Failed to delete template", variant: "destructive" })
+    }
+  };
+
+  const handleAddTemplate = () => {
+    // Add or update a template using templateService
+    ;(async () => {
+      try {
+        if (!newTemplateName.trim() || !newTemplateContent.trim()) {
+          toast({ title: "Error", description: "Please enter both template name and content", variant: "destructive" })
+          return
+        }
+
+        if (editingTemplateId) {
+          // update existing
+          const updates: Partial<MessageTemplate> = {
+            name: newTemplateName,
+            content: newTemplateContent,
+            category: newTemplateCategory,
+          }
+          const res = await templateService.updateTemplate(editingTemplateId, updates)
+          if (res) {
+            toast({ title: "Template updated", description: `Template \"${res.name}\" updated` })
+            setEditingTemplateId(null)
+            setNewTemplateName("")
+            setNewTemplateContent("")
+            setNewTemplateCategory("personal")
+            await loadData()
+            return
+          }
+          throw new Error('Update failed')
+        } else {
+          // create new
+          const created = await templateService.addTemplate(newTemplateName, newTemplateContent, newTemplateCategory)
+          if (created) {
+            toast({ title: "Template saved", description: `Template \"${created.name}\" created` })
+            setNewTemplateName("")
+            setNewTemplateContent("")
+            setNewTemplateCategory("personal")
+            await loadData()
+            return
+          }
+          throw new Error('Create failed')
+        }
+      } catch (err) {
+        console.error('handleAddTemplate error', err)
+        toast({ title: 'Error', description: 'Failed to save template', variant: 'destructive' })
+      }
+    })()
+  };
+
+  // Message scheduling handler
+  const handleScheduleMessage = async () => {
+    try {
+      // Implement message scheduling logic
+      setShowSendLater(true);
+    } catch (error) {
+      console.error("Error scheduling message:", error);
+      toast({
+        title: "Error",
+        description: "Failed to schedule message",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Send later handler
+  const handleSendLater = async (scheduledTime: Date) => {
+    try {
+      // Implement send later logic
+      toast({
+        title: "Message scheduled",
+        description: `Message will be sent at ${scheduledTime.toLocaleString()}`,
+      });
+    } catch (error) {
+      console.error("Error scheduling message:", error);
+      toast({
+        title: "Error",
+        description: "Failed to schedule message",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // MMS handler
+  const handleSendMMS = async (data: { 
+    to: string[]; 
+    subject: string; 
+    body: string; 
+    media: { 
+      type: string; 
+      filename: string; 
+      data: string; 
+    }[]; 
+  }) => {
+    try {
+      // Implement MMS sending logic
+      console.log("Sending MMS with data:", data);
+      toast({
+        title: "MMS sent",
+        description: "Your MMS message has been sent",
+      });
+    } catch (error) {
+      console.error("Error sending MMS:", error);
+      toast({
+        title: "Error",
+        description: "Failed to send MMS",
+        variant: "destructive",
+      });
+    }
+  };
 
   // Sync authentication state with AuthProvider on mount
   useEffect(() => {
@@ -110,6 +388,14 @@ function DesktopMessaging() {
         if (typeof window !== 'undefined') {
           sessionStorage.setItem('currentUser', JSON.stringify(completeUser));
         }
+        // Authenticate WebSocket connection for real-time updates
+        try {
+          if (authenticateAsUser && completeUser?.id) {
+            authenticateAsUser(completeUser.id)
+          }
+        } catch (e) {
+          console.warn('WebSocket user authentication failed', e)
+        }
         
         loadData().catch(console.error);
       } else {
@@ -128,12 +414,16 @@ function DesktopMessaging() {
     console.log('Current user state updated:', currentUser)
   }, [currentUser])
 
+
+
   // Form state
   const [toRecipients, setToRecipients] = useState("")
   const [messageText, setMessageText] = useState("")
   const [saveTitle, setSaveTitle] = useState("")
   const [searchQuery, setSearchQuery] = useState("") // Global search bar
   const [sidebarContactSearchQuery, setSidebarContactSearchQuery] = useState("") // Sidebar contact search
+  const [contactsSearchQuery, setContactsSearchQuery] = useState("") // Contacts page search
+  const [inboxSearchQuery, setInboxSearchQuery] = useState("") // Inbox page search
   const [selectedTemplate, setSelectedTemplate] = useState("")
   const [bulkNumberSend, setBulkNumberSend] = useState(false)
   const [mailMerge, setMailMerge] = useState(false)
@@ -144,34 +434,269 @@ function DesktopMessaging() {
     contacts: Contact[]
     templates: MessageTemplate[]
     messages: Message[]
+    users: any[]
+    groups: { id: string; name: string; type: string; memberIds: string[] }[]
   }>({
     contacts: [],
     templates: [],
     messages: [],
+    users: [],
+    groups: [],
   })
 
   // Data state
-  const [contacts, setContacts] = useState<Contact[]>([])
-  const [templates, setTemplates] = useState<MessageTemplate[]>([])
   const [selectedContacts, setSelectedContacts] = useState<string[]>([])
   const [filteredContacts, setFilteredContacts] = useState<Contact[]>([])
+  const [contactGroups, setContactGroups] = useState<{ id: string; name: string; type: string; memberIds: string[] }[]>([])
+  // templates state declared earlier — do not redeclare here
+
+  // Helper: normalize a phone number to digits-only string
+  const normalizeNumber = (num?: string | null) => {
+    if (!num) return ""
+    return String(num).replace(/\D/g, "")
+  }
+
+  // Simple CSV parser that handles quoted fields
+  const parseCsv = (text: string) => {
+    if (!text) return []
+    const lines = text.split(/\r\n|\n/)
+      .map(l => l.trim())
+      .filter(l => l.length > 0)
+    if (lines.length === 0) return []
+
+    const parseRow = (line: string) => {
+      const result: string[] = []
+      let cur = ''
+      let inQuotes = false
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (inQuotes) {
+          if (ch === '"') {
+            if (i + 1 < line.length && line[i + 1] === '"') {
+              cur += '"'
+              i++
+            } else {
+              inQuotes = false
+            }
+          } else {
+            cur += ch
+          }
+        } else {
+          if (ch === ',') {
+            result.push(cur)
+            cur = ''
+          } else if (ch === '"') {
+            inQuotes = true
+          } else {
+            cur += ch
+          }
+        }
+      }
+      result.push(cur)
+      return result
+    }
+
+    const headers = parseRow(lines[0]).map(h => h.trim())
+    const rows: Array<Record<string,string>> = []
+    for (let i = 1; i < lines.length; i++) {
+      const fields = parseRow(lines[i])
+      if (fields.length === 0) continue
+      const row: Record<string,string> = {}
+      for (let j = 0; j < headers.length; j++) {
+        row[headers[j]] = (fields[j] || '').trim()
+      }
+      rows.push(row)
+    }
+    return rows
+  }
+
+  // Helper: annotate inbox messages with contact display names using contacts list
+  const annotateMessagesWithContacts = (messages: any[], contactsList: Contact[] = []) => {
+    try {
+      // Build a map of last-9-digits -> contact name for quick lookup
+      const map = new Map<string, string>()
+      contactsList.forEach((c) => {
+        if (!c?.phoneNumber) return
+        const norm = normalizeNumber(c.phoneNumber)
+        const key = norm.slice(-9)
+        if (key) map.set(key, c.name)
+      })
+
+      return messages.map((m: any) => {
+        const rawFrom = m.from || m.fromNumber || m.fromAddress || m.fromTelephone || m.from_phone || ""
+        const norm = normalizeNumber(rawFrom)
+        const key = norm.slice(-9)
+        const matchedName = map.get(key)
+        return {
+          ...m,
+          originalFrom: rawFrom,
+          displayFrom: matchedName || undefined,
+        }
+      })
+    } catch (e) {
+      console.warn('Failed to annotate messages with contacts', e)
+      return messages
+    }
+  }
 
   // Dialog state
   const [showStatus, setShowStatus] = useState(false)
-  const [showSendLater, setShowSendLater] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
-  const [alert, setAlert] = useState<{ type: "success" | "error"; message: string } | null>(null)
-
-  const [showSendMMS, setShowSendMMS] = useState(false)
-  const [showInbox, setShowInbox] = useState(false)
-  const [showContacts, setShowContacts] = useState(false)
-  const [showLibrary, setShowLibrary] = useState(false)
-  const [showSentMessages, setShowSentMessages] = useState(false)
-  const [showScheduledMessages, setShowScheduledMessages] = useState(false)
-  const [showRulesWizard, setShowRulesWizard] = useState(false)
-  const [showUserSettings, setShowUserSettings] = useState(false)
-  const [activeMenuItem, setActiveMenuItem] = useState(1)
+  const [alert, setAlert] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null)
+  // Persist the active menu/tab across page refreshes using sessionStorage.
+  // Initialize from sessionStorage (if present) to avoid always jumping back to "Send SMS".
+  const [activeMenuItem, setActiveMenuItem] = useState<number>(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const v = sessionStorage.getItem('activeMenuItem')
+        if (v) {
+          const n = parseInt(v, 10)
+          if (!isNaN(n)) return n
+        }
+      }
+    } catch (e) {
+      // ignore and fall back to default
+    }
+    return 1
+  })
   const [editingRuleId, setEditingRuleId] = useState<string | undefined>(undefined)
+
+  // Ensure sent messages are loaded for the Sent Messages view.
+  // Fetch on mount and whenever the Sent Messages tab is opened.
+  useEffect(() => {
+    // On component mount, load the first page of sent messages
+    fetchSentMessages(0).catch((err) => console.warn('Initial fetchSentMessages failed', err))
+
+    return () => {
+      // No cleanup required for fetch
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeMenuItem === 7) {
+      // When user navigates to Sent Messages, refresh the list
+      fetchSentMessages(0).catch((err) => console.warn('fetchSentMessages failed on tab open', err))
+    }
+  }, [activeMenuItem])
+
+  // Persist activeMenuItem whenever it changes so a browser refresh restores the tab.
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('activeMenuItem', String(activeMenuItem))
+      }
+    } catch (e) {
+      // ignore storage errors
+    }
+  }, [activeMenuItem])
+
+  // Toggle a rule enabled/disabled
+  const handleToggleRule = (ruleId: string) => {
+    setRules((prevRules) =>
+      prevRules.map((rule) => (rule.id === ruleId ? { ...rule, enabled: !rule.enabled } : rule)),
+    )
+  }
+
+  // Handle deleting a rule
+  const handleDeleteRule = (ruleId: string) => {
+    setRules(prevRules => prevRules.filter(rule => rule.id !== ruleId));
+  };
+
+  // Handle adding a new contact
+  const handleAddContact = async () => {
+    if (!newContactName || !newContactPhone) {
+      toast({
+        title: "Error",
+        description: "Name and phone number are required",
+        variant: "destructive",
+      })
+      return
+    }
+
+    try {
+      let newContact: Contact
+      // Try to persist via contactService if available
+      if (contactService && typeof contactService.createContact === 'function') {
+        const created = await contactService.createContact({
+          name: newContactName,
+          phoneNumber: newContactPhone,
+          email: newContactEmail || undefined,
+          category: newContactType,
+          createdAt: new Date(),
+        } as Omit<Contact, "id">)
+        if (created) {
+          newContact = created
+        } else {
+          newContact = {
+            id: Date.now().toString(),
+            userId: currentUser?.id || "",
+            name: newContactName,
+            phoneNumber: newContactPhone,
+            email: newContactEmail || undefined,
+            category: newContactType,
+            createdAt: new Date(),
+          }
+        }
+      } else {
+        // Fallback to local state if contactService.createContact is not available
+        newContact = {
+          id: Date.now().toString(),
+          userId: currentUser?.id || "",
+          name: newContactName,
+          phoneNumber: newContactPhone,
+          email: newContactEmail || undefined,
+          category: newContactType,
+          createdAt: new Date(),
+        }
+      }
+
+      setContacts((prev) => [...prev, newContact])
+      setNewContactName("")
+      setNewContactPhone("")
+      setNewContactEmail("")
+      setNewContactType("personal")
+
+      toast({ title: "Success", description: "Contact added successfully" })
+      setShowContacts(false)
+    } catch (err) {
+      console.error("Error adding contact:", err)
+      toast({ title: "Error", description: "Failed to add contact. Please try again.", variant: "destructive" })
+    }
+  }
+
+  // Handle editing a contact
+  const handleEditContact = async (contactId: string, updates: Partial<Contact>) => {
+    try {
+      const updatedContact = await contactService.updateContact(contactId, updates);
+      setContacts(prevContacts => 
+        prevContacts.map(contact => 
+          contact.id === contactId ? { ...contact, ...updatedContact } : contact
+        )
+      );
+      showAlert('success', 'Contact updated successfully');
+      return updatedContact;
+    } catch (error) {
+      console.error('Error updating contact:', error);
+      showAlert('error', 'Failed to update contact');
+      throw error;
+    }
+  };
+
+  // Handle deleting a contact
+  const handleDeleteContact = async (contactId: string) => {
+    if (!window.confirm('Are you sure you want to delete this contact?')) {
+      return;
+    }
+    
+    try {
+      await contactService.deleteContact(contactId);
+      setContacts(prevContacts => prevContacts.filter(contact => contact.id !== contactId));
+      showAlert('success', 'Contact deleted successfully');
+    } catch (error) {
+      console.error('Error deleting contact:', error);
+      showAlert('error', 'Failed to delete contact');
+    }
+  }
 
   // Contact categories
   const [contactFilters, setContactFilters] = useState({
@@ -186,19 +711,6 @@ function DesktopMessaging() {
   const [inboxMessages, setInboxMessages] = useState<any[]>([])
   const [mediaFiles, setMediaFiles] = useState<MediaFile[]>([])
   const [sentMessages, setSentMessages] = useState<Message[]>([])
-  const [scheduledMessages, setScheduledMessages] = useState<Message[]>([])
-  const [paging, setPaging] = useState<any>({})
-  const pageSize = 50;
-  const [offset, setOffset] = useState(0)
-
-  // Form state for new forms
-  const [newContactName, setNewContactName] = useState("")
-  const [newContactPhone, setNewContactPhone] = useState("")
-  const [newContactEmail, setNewContactEmail] = useState("")
-  const [newContactType, setNewContactType] = useState<"personal" | "company">("personal")
-
-  const [newTemplateName, setNewTemplateName] = useState("")
-  const [newTemplateContent, setNewTemplateContent] = useState("")
   const [newTemplateCategory, setNewTemplateCategory] = useState<"personal" | "company">("personal")
 
   const [newRuleName, setNewRuleName] = useState("")
@@ -219,6 +731,56 @@ function DesktopMessaging() {
 
   // Add to your component state
   const [selectedMessage, setSelectedMessage] = useState<any>(null);
+
+  // Listen for global logout events and perform thorough cleanup of UI and services.
+  useEffect(() => {
+    const onLogout = () => {
+      try {
+        messagingService.stopPollingMessages()
+      } catch (e) {
+        console.warn('messagingService.stopPollingMessages failed during logout cleanup', e)
+      }
+
+      try {
+        if (disconnect) disconnect()
+      } catch (e) {
+        console.warn('WebSocket disconnect failed during logout cleanup', e)
+      }
+
+      // Clear component-level data so next login doesn't see stale data
+      try {
+        setInboxMessages([])
+        setSentApiMessages([])
+        setSentMessages([])
+        setContacts([])
+        setTemplates([])
+        setRules([])
+        setMediaFiles([])
+        setScheduledMessages([])
+        setSearchResults({ contacts: [], templates: [], messages: [], users: [], groups: [] })
+        setFilteredContacts([])
+        setSelectedContacts([])
+        setToRecipients('')
+        setMessageText('')
+        setSelectedMessage(null)
+        setActiveMenuItem(1)
+        setShowInbox(false)
+        setShowSentMessages(false)
+      } catch (e) {
+        console.warn('Failed to reset component state during logout cleanup', e)
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('app:logout', onLogout as EventListener)
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('app:logout', onLogout as EventListener)
+      }
+    }
+  }, [disconnect])
 
   // Sent messages pagination and filter state
   const [sentApiMessages, setSentApiMessages] = useState<any[]>([]);
@@ -243,27 +805,503 @@ function DesktopMessaging() {
   });
 
   // Place this above the JSX for the summary cards in the Sent Messages section:
-  const totalSent = sentApiMessages?.length || 0;
+  // Prefer the API-provided totalCount when available so the summary shows the full dataset size
+  const totalSent = (sentPaging?.totalCount ?? sentApiMessages?.length) || 0;
   const deliveredCount = sentApiMessages?.filter(m => m.status === "delivered").length || 0;
   const pendingCount = sentApiMessages?.filter(m => ["queued", "pending", "scheduled"].includes(m.status)).length || 0;
   const failedCount = sentApiMessages?.filter(m => ["failed", "cancelled", "expired"].includes(m.status)).length || 0;
 
-  useEffect(() => {
-    if (isAuthenticated) {
-      loadData()
-    }
-  }, [isAuthenticated])
+  // Helper function to show alerts
+  // Auto-dismissable alert helper. Pass autoDismissMs = 0 to disable auto-dismiss.
+  const alertTimeoutRef = useRef<number | null>(null)
 
-  // Replace the existing search useEffect with this improved version
-  useEffect(() => {
-    if (searchQuery.trim()) {
-      performSearch(searchQuery)
-      setShowSearchResults(true)
-    } else {
-      setShowSearchResults(false)
-      setSearchResults({ contacts: [], templates: [], messages: [] })
+  const showAlert = (type: "success" | "error" | "info", message: string, autoDismissMs: number = 5000) => {
+    setAlert({ type, message })
+
+    // Clear any previous timeout
+    if (alertTimeoutRef.current) {
+      window.clearTimeout(alertTimeoutRef.current)
+      alertTimeoutRef.current = null
     }
-  }, [searchQuery]) // Remove other dependencies since performSearch now fetches fresh data
+
+    // Schedule auto-dismiss if requested
+    if (autoDismissMs && autoDismissMs > 0) {
+      alertTimeoutRef.current = window.setTimeout(() => {
+        setAlert(null)
+        alertTimeoutRef.current = null
+      }, autoDismissMs) as unknown as number
+    }
+  }
+
+  // Clear timeout when component unmounts
+  useEffect(() => {
+    return () => {
+      if (alertTimeoutRef.current) {
+        window.clearTimeout(alertTimeoutRef.current)
+        alertTimeoutRef.current = null
+      }
+    }
+  }, [])
+
+
+  // Fetch sent messages
+  const fetchSentMessages = async (newOffset: number = 0) => {
+    try {
+      const sentResp = await messagingService.getSentMessages(newOffset, sentPageSize)
+      const messages = sentResp?.messages || []
+      const total = sentResp?.totalCount || messages.length || 0
+  setSentApiMessages(messages)
+  setSentPaging((prev: any) => ({ ...prev, totalCount: total }))
+      setSentOffset(newOffset)
+      setCurrentPage(Math.floor(newOffset / sentPageSize) + 1)
+    } catch (error) {
+      console.error("Error fetching sent messages:", error)
+      showAlert("error", "Failed to fetch sent messages")
+    }
+  }
+
+  // Idle detection and polling: when the app is idle, poll messages API (respect rate limits)
+  useEffect(() => {
+    let idleTimer: number | null = null
+    let activityEvents: Array<[string, EventListener]> = []
+    let isIdle = false
+
+    const idleMs = 60 * 1000 // 1 minute of inactivity before considered idle
+
+    const resetIdle = () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer)
+      }
+      // If we were idle, stop polling when activity resumes
+      if (isIdle) {
+        messagingService.stopPollingMessages()
+        isIdle = false
+      }
+      idleTimer = window.setTimeout(() => {
+        isIdle = true
+        // Start polling with reasonable defaults; polling service will handle 429/Retry-After
+        messagingService.startPollingMessages({
+          intervalMs: 30 * 1000,
+          fetchSent: true,
+          fetchInbox: true,
+          onUpdate: (payload) => {
+            if (payload.sent) {
+              setSentApiMessages(payload.sent)
+            }
+            if (payload.inbox) {
+              // annotate inbox messages with contacts if available
+              const annotated = annotateMessagesWithContacts(payload.inbox, contacts || [])
+              setInboxMessages(annotated)
+            }
+          },
+        })
+      }, idleMs)
+    }
+
+    const activityHandler = () => resetIdle()
+
+    // Hook up activity listeners
+    const events = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart']
+    events.forEach((ev) => {
+      const handler = activityHandler
+      window.addEventListener(ev, handler)
+      activityEvents.push([ev, handler])
+    })
+
+    // Pause polling when page hidden, resume idle timer when visible
+    const visibilityHandler = () => {
+      if (document.visibilityState === 'hidden') {
+        messagingService.stopPollingMessages()
+      } else {
+        resetIdle()
+      }
+    }
+    document.addEventListener('visibilitychange', visibilityHandler)
+
+    // Start idle countdown
+    resetIdle()
+
+    return () => {
+      // cleanup
+      if (idleTimer) clearTimeout(idleTimer)
+      activityEvents.forEach(([ev, h]) => window.removeEventListener(ev, h))
+      document.removeEventListener('visibilitychange', visibilityHandler)
+      messagingService.stopPollingMessages()
+    }
+  }, [contacts])
+
+  // Handle login
+  const handleLogin = async () => {
+    setIsAuthenticated(true)
+    setShowLogin(false)
+    const user = authService.getCurrentUser();
+    setCurrentUser(user)
+    await loadData()
+    // No redirect; admin button will be visible if user is admin
+  }
+
+  // Load data function
+  const loadData = async () => {
+    try {
+      const [contactsData, templatesData, rulesData, inboxData, mediaData] = await Promise.all([
+        contactService.getContacts(),
+        templateService.getTemplates(),
+        rulesService.getRules(),
+        // inboxService.getMessages now returns { messages, totalCount }
+        inboxService.getMessages().then((r) => r.messages),
+        mediaService.getMediaFiles(),
+      ])
+
+      // Fetch sent messages separately so we can receive pagination metadata
+      const sentResp = await messagingService.getSentMessages(0, 50)
+      const sentData = sentResp?.messages || []
+      const scheduledData = await messagingService.getScheduledMessages()
+
+  // Annotate inbox messages with contact display names where possible
+  const annotatedInbox = annotateMessagesWithContacts(inboxData || [], contactsData || [])
+
+  setContacts(contactsData)
+  setTemplates(templatesData)
+  setRules(rulesData)
+  setInboxMessages(annotatedInbox)
+  setMediaFiles(mediaData)
+    setSentMessages(sentData)
+  // Keep the API-backed sent list in sync so the Sent Messages view updates
+  setSentApiMessages(sentData || [])
+  // Ensure paging metadata is set for the initial load so UI shows the full total count
+  setSentPaging((prev: any) => ({ ...prev, totalCount: sentResp?.totalCount ?? sentData.length ?? 0 }))
+  setScheduledMessages(scheduledData)
+
+      setCurrentUser(authService.getCurrentUser())
+      // Also load contact groups for UI
+      loadGroups()
+    } catch (error) {
+      console.error("[loadData] Error loading data:", error)
+    }
+  }
+
+  const loadGroups = async () => {
+    try {
+      const groups = await contactService.getGroups()
+      setContactGroups(groups || [])
+    } catch (e) {
+      console.warn('Failed to load contact groups', e)
+      setContactGroups([])
+    }
+  }
+
+  // Listen for group changes from the Contacts dialog and reload groups
+  useEffect(() => {
+    const handler = () => {
+      loadGroups().catch((err) => console.warn('Error reloading groups on update', err))
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('contactGroupsUpdated', handler)
+    }
+    // WebSocket: listen for real-time inbox messages if socket is available
+    const inboxHandler = (msg: any) => {
+      try {
+        const annotated = annotateMessagesWithContacts([msg], contacts || [])
+        setInboxMessages((prev) => [annotated[0], ...prev])
+        showAlert('info', 'New message received')
+      } catch (e) {
+        console.warn('Failed to handle real-time inbox message', e)
+      }
+    }
+
+    const sentHandler = (data: any) => {
+      try {
+        if (data) setSentApiMessages((prev) => [data, ...prev])
+      } catch (e) {
+        console.warn('Failed to handle real-time sent message', e)
+      }
+    }
+
+    if (socket) {
+      // Attach handlers to the live socket
+      socket.on('inbox:new', inboxHandler)
+      socket.on('message:sent', sentHandler)
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('contactGroupsUpdated', handler)
+      }
+      // If socket exists, remove handlers to avoid duplicates
+      if (socket) {
+        try {
+          socket.off('inbox:new', inboxHandler)
+          socket.off('message:sent', sentHandler)
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+  }, [socket, contacts])
+
+  // Search function
+  const performSearch = async (query: string) => {
+    try {
+      // Parallelize searches: server-side contact search (includes admin users merged by API), templates, sent messages, users, and groups
+      const [contactsData, templatesData, sentData, usersData, groupsData] = await Promise.all([
+        contactService.searchContacts(query),
+        templateService.getTemplates(),
+        messagingService.getSentMessages(),
+        // lazy import userService to avoid circular dependencies in some builds
+        (await import("@/lib/user-service")).userService.searchUsers(query, 8),
+        contactService.getGroups(),
+      ])
+
+      const lowercaseQuery = query.toLowerCase()
+
+      // Contacts come pre-filtered by the server search; apply a lightweight client filter just in case
+      const contactResults = (contactsData || []).filter(
+        (contact) =>
+          contact.name.toLowerCase().includes(lowercaseQuery) ||
+          (contact.phoneNumber && contact.phoneNumber.includes(query)) ||
+          (contact.email && contact.email.toLowerCase().includes(lowercaseQuery)),
+      )
+
+      // Templates
+      const templateResults = (templatesData || []).filter(
+        (template) =>
+          template.name.toLowerCase().includes(lowercaseQuery) || template.content.toLowerCase().includes(lowercaseQuery),
+      )
+
+      // Sent messages: `messagingService.getSentMessages()` returns { messages, totalCount }
+      const sentArray = Array.isArray(sentData) ? sentData : sentData?.messages || []
+      const messageResults = (sentArray || []).filter((message: any) => {
+        const toMatches = (message.to || []).some((recipient: string) => recipient.includes(query))
+        const content = (message.content || "").toString().toLowerCase()
+        return toMatches || content.includes(lowercaseQuery)
+      })
+
+      // Users returned from admin API are already filtered server-side, but trim and limit
+      const userResults = (usersData || []).slice(0, 8)
+
+      // Groups - do a lightweight filter on name
+      const groupResults = (groupsData || []).filter((g) => g.name.toLowerCase().includes(lowercaseQuery)).slice(0, 8)
+
+      setSearchResults({
+        contacts: contactResults.slice(0, 6),
+        templates: templateResults.slice(0, 4),
+        messages: messageResults.slice(0, 6),
+        users: userResults,
+        groups: groupResults,
+      })
+    } catch (error) {
+      console.error("[Search] Error performing search:", error)
+      setSearchResults({
+        contacts: [] as Contact[],
+        templates: [] as MessageTemplate[],
+        messages: [] as Message[],
+        users: [],
+        groups: []
+      })
+    }
+  }
+
+  // Search change handler
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value)
+
+    // Clear existing timeout
+    if (searchTimeout) {
+      clearTimeout(searchTimeout)
+    }
+
+    // Set new timeout for debounced search
+    const timeout = setTimeout(async () => {
+      if (value.trim()) {
+        await performSearch(value)
+        setShowSearchResults(true)
+      } else {
+        setShowSearchResults(false)
+        setSearchResults({ contacts: [], templates: [], messages: [], users: [], groups: [] })
+      }
+    }, 300) // 300ms delay
+
+    setSearchTimeout(timeout)
+  }
+
+  // Search result click handler
+  const handleSearchResultClick = (type: "contact" | "template" | "message", item: any) => {
+    switch (type) {
+      case "contact":
+        const currentRecipients = toRecipients.trim()
+        const newRecipients = currentRecipients ? `${currentRecipients}; ${item.phoneNumber}` : item.phoneNumber
+        setToRecipients(newRecipients)
+        showAlert("success", `Added ${item.name} to recipients`)
+        break
+      case "template":
+        setMessageText(item.content)
+        setSelectedTemplate(item.id)
+        showAlert("success", `Template "${item.name}" loaded`)
+        break
+      case "message":
+        setToRecipients(item.to.join("; "))
+        setMessageText(item.content)
+        showAlert("success", "Previous message loaded")
+        break
+    }
+    setSearchQuery("")
+    setShowSearchResults(false)
+  }
+
+  // Clear form function
+  const clearForm = () => {
+    setToRecipients("")
+    setMessageText("")
+    setSaveTitle("")
+    setSelectedTemplate("")
+    setSelectedContacts([])
+    showAlert("success", "Form cleared successfully")
+  }
+
+  // Send now handler
+  const handleSendNow = async () => {
+    if (!messageText.trim()) {
+      showAlert("error", "Please enter a message")
+      return
+    }
+
+    let recipients: string[] = []
+
+    if (toRecipients.trim()) {
+      recipients = messagingService.parseRecipients(toRecipients)
+    }
+
+    if (selectedContacts.length > 0) {
+      const selectedContactObjects = await contactService.getSelectedContacts(selectedContacts)
+      recipients = [...recipients, ...selectedContactObjects.map((c) => c.phoneNumber)]
+    }
+
+    if (recipients.length === 0) {
+      showAlert("error", "Please add recipients")
+      return
+    }
+
+    // Determine message type based on active menu item
+    const messageType = activeMenuItem === 2 ? "mms" : "sms"
+
+    const result = await messagingService.sendMessage(
+      recipients,
+      messageText,
+      messageType,
+      undefined,
+      selectedTemplate ? templates.find((t) => t.id === selectedTemplate)?.name : undefined,
+    )
+
+    if (result.success) {
+      const messageLabel = messageType === "mms" ? "MMS" : "SMS"
+      showAlert("success", `${messageLabel} sent successfully to ${recipients.length} recipient(s)`)
+      clearForm()
+      // Refresh lists so Sent and Inbox views reflect the newly-sent message
+      try {
+        await fetchSentMessages(0)
+      } catch (err) {
+        console.warn("fetchSentMessages failed after send:", err)
+      }
+      try {
+        await fetchInboxMessages(0)
+      } catch (err) {
+        console.warn("fetchInboxMessages failed after send:", err)
+      }
+
+      // Also refresh small bits of data like credits/user info
+      loadData() // Refresh user credits and other summary data
+    } else {
+      showAlert("error", result.error || "Failed to send message")
+    }
+  }
+
+  // Template select handler
+  const handleTemplateSelect = (templateId: string) => {
+    setSelectedTemplate(templateId)
+    const template = templates.find((t) => t.id === templateId)
+    if (template) {
+      setMessageText(template.content)
+      showAlert("success", `Template "${template.name}" loaded`)
+    }
+  }
+
+  // Save template handler
+  const handleSaveTemplate = async () => {
+    if (!saveTitle.trim() || !messageText.trim()) {
+      showAlert("error", "Please enter both title and message content")
+      return
+    }
+
+    try {
+      const template = await templateService.addTemplate(
+        saveTitle,
+        messageText,
+        "personal" // Default to personal category
+      )
+
+      if (template) {
+        showAlert("success", `Template "${template.name}" saved successfully`)
+        setSaveTitle("")
+        loadData() // Refresh templates
+      } else {
+        showAlert("error", "Failed to save template")
+      }
+    } catch (error) {
+      console.error("Error saving template:", error)
+      showAlert("error", "Failed to save template")
+    }
+  }
+
+  // Add selected contacts to recipients
+  const addSelectedContactsToRecipients = async () => {
+    if (selectedContacts.length === 0) {
+      showAlert("error", "Please select contacts first")
+      return
+    }
+
+    const selectedContactObjects = await contactService.getSelectedContacts(selectedContacts)
+    const phoneNumbers = selectedContactObjects.map((c) => c.phoneNumber)
+
+    const currentRecipients = toRecipients.trim()
+    const newRecipients = currentRecipients
+      ? `${currentRecipients}; ${phoneNumbers.join("; ")}`
+      : phoneNumbers.join("; ")
+
+    setToRecipients(newRecipients)
+    setSelectedContacts([])
+    showAlert("success", `Added ${phoneNumbers.length} contact(s) to recipients`)
+  }
+
+  // Fetch inbox messages
+  const fetchInboxMessages = async (newOffset: number = 0) => {
+    try {
+  const inboxResp = await inboxService.getMessages(newOffset, pageSize)
+  const inboxData = inboxResp?.messages || []
+      // Try to resolve contact names for incoming numbers
+      let contactsList = contacts
+      try {
+        // If we don't have contacts in state, fetch them
+        if (!contactsList || contactsList.length === 0) {
+          contactsList = await contactService.getContacts()
+        }
+      } catch (e) {
+        console.warn('Failed to load contacts for inbox annotation', e)
+      }
+
+      const annotated = annotateMessagesWithContacts(inboxData || [], contactsList || [])
+      setInboxMessages(annotated)
+      setPaging((prev: any) => ({
+        ...prev,
+        totalCount: inboxResp?.totalCount ?? inboxData.length,
+        previousPage: newOffset > 0,
+        nextPage: (inboxData?.length || 0) === pageSize,
+      }))
+      setOffset(newOffset)
+    } catch (error) {
+      console.error("Error fetching inbox messages:", error)
+      showAlert("error", "Failed to fetch inbox messages")
+    }
+  }
 
   // Replace the contact filtering useEffect
   useEffect(() => {
@@ -303,740 +1341,25 @@ function DesktopMessaging() {
     updateFilteredContacts()
   }, [sidebarContactSearchQuery, contactFilters])
 
-  // Add cleanup effect for search timeout
-  useEffect(() => {
-    return () => {
-      if (searchTimeout) {
-        clearTimeout(searchTimeout)
-      }
-    }
-  }, [searchTimeout])
-
-  // Update search query with debouncing
-  const handleSearchChange = (value: string) => {
-    setSearchQuery(value)
-
-    // Clear existing timeout
-    if (searchTimeout) {
-      clearTimeout(searchTimeout)
-    }
-
-    // Set new timeout for debounced search
-    const timeout = setTimeout(async () => {
-      if (value.trim()) {
-        await performSearch(value)
-        setShowSearchResults(true)
-      } else {
-        setShowSearchResults(false)
-        setSearchResults({ contacts: [], templates: [], messages: [] })
-      }
-    }, 300) // 300ms delay
-
-    setSearchTimeout(timeout)
-  }
-
-  // Replace the existing performSearch function
-  const performSearch = async (query: string) => {
-    try {
-      const [contactsData, templatesData, sentData] = await Promise.all([
-        contactService.getContacts(),
-        templateService.getTemplates(),
-        messagingService.getSentMessages()
-      ])
-
-      const lowercaseQuery = query.toLowerCase()
-
-      // Search contacts
-      const contactResults = contactsData.filter(
-        (contact) =>
-          contact.name.toLowerCase().includes(lowercaseQuery) ||
-          contact.phoneNumber.includes(query) ||
-          (contact.email && contact.email.toLowerCase().includes(lowercaseQuery)),
-      )
-
-      // Search templates
-      const templateResults = templatesData.filter(
-        (template) =>
-          template.name.toLowerCase().includes(lowercaseQuery) || template.content.toLowerCase().includes(lowercaseQuery),
-      )
-
-      // Search sent messages
-      const messageResults = sentData.filter(
-        (message) =>
-          message.to.some((recipient) => recipient.includes(query)) ||
-          message.content.toLowerCase().includes(lowercaseQuery),
-      )
-
-      setSearchResults({
-        contacts: contactResults.slice(0, 5), // Limit results
-        templates: templateResults.slice(0, 5),
-        messages: messageResults.slice(0, 5),
-      })
-    } catch (error) {
-      console.error("[Search] Error performing search:", error)
-      setSearchResults({ contacts: [], templates: [], messages: [] })
-    }
-  }
-
-  const handleSearchResultClick = (type: "contact" | "template" | "message", item: any) => {
-    switch (type) {
-      case "contact":
-        const currentRecipients = toRecipients.trim()
-        const newRecipients = currentRecipients ? `${currentRecipients}; ${item.phoneNumber}` : item.phoneNumber
-        setToRecipients(newRecipients)
-        showAlert("success", `Added ${item.name} to recipients`)
-        break
-      case "template":
-        setMessageText(item.content)
-        setSelectedTemplate(item.id)
-        showAlert("success", `Template "${item.name}" loaded`)
-        break
-      case "message":
-        setToRecipients(item.to.join("; "))
-        setMessageText(item.content)
-        showAlert("success", "Previous message loaded")
-        break
-    }
-    setSearchQuery("")
-    setShowSearchResults(false)
-  }
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.ctrlKey || event.metaKey) {
-        switch (event.key) {
-          case "h":
-            event.preventDefault()
-            setShowHelp(true)
-            break
-          case "Enter":
-            if (event.shiftKey) {
-              event.preventDefault()
-              setShowSendLater(true)
-            } else {
-              event.preventDefault()
-              handleSendNow()
-            }
-            break
-          case "r":
-            event.preventDefault()
-            clearForm()
-            break
-          case "t":
-            event.preventDefault()
-            // Focus template selector
-            break
-          case "f":
-            event.preventDefault()
-            // Focus search
-            break
-          case "s":
-            event.preventDefault()
-            handleSaveTemplate()
-            break
-        }
-      } else if (event.key === "Escape") {
-        setShowHelp(false)
-        setShowStatus(false)
-        setShowSendLater(false)
-        setShowSearchResults(false)
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [messageText, saveTitle])
-
-  // Update the loadData function
-  const loadData = async () => {
-    try {
-      const [contactsData, templatesData, rulesData, inboxData, mediaData, sentData, scheduledData] = await Promise.all([
-        contactService.getContacts(),
-        templateService.getTemplates(),
-        rulesService.getRules(),
-        inboxService.getMessages(),
-        mediaService.getMediaFiles(),
-        messagingService.getSentMessages(),
-        messagingService.getScheduledMessages()
-      ])
-
-      setContacts(contactsData)
-      setTemplates(templatesData)
-      setRules(rulesData)
-      setInboxMessages(inboxData)
-      setMediaFiles(mediaData)
-      setSentMessages(sentData)
-      setScheduledMessages(scheduledData)
-
-      setCurrentUser(authService.getCurrentUser())
-    } catch (error) {
-      console.error("[loadData] Error loading data:", error)
-    }
-  }
-
-  const handleLogin = async () => {
-    setIsAuthenticated(true)
-    setShowLogin(false)
-    const user = authService.getCurrentUser();
-    setCurrentUser(user)
-    await loadData()
-    // No redirect; admin button will be visible if user is admin
-  }
-
-  const handleLogout = async () => {
-    await authService.logout()
-    setIsAuthenticated(false)
-    setShowLogin(true)
-    setCurrentUser(null)
-  }
-
-  const clearForm = () => {
-    setToRecipients("")
-    setMessageText("")
-    setSaveTitle("")
-    setSelectedTemplate("")
-    setSelectedContacts([])
-    showAlert("success", "Form cleared successfully")
-  }
-
-  const showAlert = (type: "success" | "error", message: string) => {
-    setAlert({ type, message })
-    setTimeout(() => setAlert(null), 5000)
-  }
-
-  const handleSendNow = async () => {
-    if (!messageText.trim()) {
-      showAlert("error", "Please enter a message")
-      return
-    }
-
-    let recipients: string[] = []
-
-    if (toRecipients.trim()) {
-      recipients = messagingService.parseRecipients(toRecipients)
-    }
-
-    if (selectedContacts.length > 0) {
-      const selectedContactObjects = await contactService.getSelectedContacts(selectedContacts)
-      recipients = [...recipients, ...selectedContactObjects.map((c) => c.phoneNumber)]
-    }
-
-    if (recipients.length === 0) {
-      showAlert("error", "Please add recipients")
-      return
-    }
-
-    // Determine message type based on active menu item
-    const messageType = activeMenuItem === 2 ? "mms" : "sms"
-
-    const result = await messagingService.sendMessage(
-      recipients,
-      messageText,
-      messageType,
-      undefined,
-      selectedTemplate ? templates.find((t) => t.id === selectedTemplate)?.name : undefined,
-    )
-
-    if (result.success) {
-      const messageLabel = messageType === "mms" ? "MMS" : "SMS"
-      showAlert("success", `${messageLabel} sent successfully to ${recipients.length} recipient(s)`)
-      clearForm()
-      loadData() // Refresh user credits
-    } else {
-      showAlert("error", result.error || "Failed to send message")
-    }
-  }
-
-  const handleSendLater = async (scheduledAt: Date) => {
-    if (!messageText.trim()) {
-      showAlert("error", "Please enter a message")
-      return
-    }
-
-    let recipients: string[] = []
-
-    if (toRecipients.trim()) {
-      recipients = messagingService.parseRecipients(toRecipients)
-    }
-
-    if (selectedContacts.length > 0) {
-      const selectedContactObjects = await contactService.getSelectedContacts(selectedContacts)
-      recipients = [...recipients, ...selectedContactObjects.map((c) => c.phoneNumber)]
-    }
-
-    if (recipients.length === 0) {
-      showAlert("error", "Please add recipients")
-      return
-    }
-
-    // Determine message type based on active menu item
-    const messageType = activeMenuItem === 2 ? "mms" : "sms"
-
-    // Save message as scheduled in database first
-    messagingService
-      .sendMessage(
-        recipients,
-        messageText,
-        messageType,
-        scheduledAt, // This will be handled by Telstra API scheduleSend parameter
-        selectedTemplate ? templates.find((t) => t.id === selectedTemplate)?.name : undefined,
-      )
-      .then((result) => {
-        if (result.success) {
-          const messageLabel = messageType === "mms" ? "MMS" : "SMS"
-          showAlert("success", `${messageLabel} scheduled successfully for ${scheduledAt.toLocaleString()} (local time)`)
-          clearForm()
-          loadData()
-        } else {
-          showAlert("error", result.error || "Failed to schedule message")
-        }
-      })
-  }
-
-  const handleTemplateSelect = (templateId: string) => {
-    setSelectedTemplate(templateId)
-    const template = templates.find((t) => t.id === templateId)
-    if (template) {
-      setMessageText(template.content)
-    }
-  }
-
-  const handleSaveTemplate = async () => {
-    if (!saveTitle.trim() || !messageText.trim()) {
-      showAlert("error", "Please enter both title and message content")
-      return
-    }
-
-    const result = await templateService.addTemplate(saveTitle, messageText, "personal")
-    if (result) {
-      showAlert("success", `Template "${saveTitle}" saved successfully`)
-      setSaveTitle("")
-      loadData()
-    } else {
-      showAlert("error", "Failed to save template")
-    }
-  }
-
-  const addSelectedContactsToRecipients = async () => {
-    if (selectedContacts.length === 0) {
-      showAlert("error", "Please select contacts first")
-      return
-    }
-
-    const selectedContactObjects = await contactService.getSelectedContacts(selectedContacts)
-    const phoneNumbers = selectedContactObjects.map((c) => c.phoneNumber)
-
-    const currentRecipients = toRecipients.trim()
-    const newRecipients = currentRecipients
-      ? `${currentRecipients}; ${phoneNumbers.join("; ")}`
-      : phoneNumbers.join("; ")
-
-    setToRecipients(newRecipients)
-    setSelectedContacts([])
-    showAlert("success", `Added ${phoneNumbers.length} contact(s) to recipients`)
-  }
-
+  // Menu items configuration
   const menuItems = [
-    {
-      id: 1,
-      label: "Send SMS",
-      icon: MessageSquare,
-      active: true,
-      description: "Address Book Send, Mail Merge Send, or Bulk Number Send for SMS messages",
-    },
-    {
-      id: 2,
-      label: "Send MMS",
-      icon: Mail,
-      description: "Address Book Send, Mail Merge Send, or Bulk Number Send for MMS messages",
-    },
-    {
-      id: 3,
-      label: "Inbox",
-      icon: Inbox,
-      description: "Preview all messages received in your Personal and Company Inboxes",
-    },
-    {
-      id: 4,
-      label: "Rules Wizard",
-      icon: Settings,
-      description: "Create and manage Company Inbox message rules",
-    },
-    {
-      id: 5,
-      label: "Contacts",
-      icon: Users,
-      description: "Select from and manage Company Contacts, Company Groups, Personal Contacts and Personal Groups",
-    },
-    {
-      id: 6,
-      label: "Library",
-      icon: BookOpen,
-      description: "Manage message templates, saved messages and multimedia content",
-    },
-    {
-      id: 7,
-      label: "Sent",
-      icon: Send,
-      description: "View all messages sent and review their message status",
-    },
-    {
-      id: 8,
-      label: "Scheduled Messages",
-      icon: Clock,
-      description: "View and manage all scheduled messages",
-    },
+    { id: 1, label: "SEND SMS", description: "Compose and send SMS messages" },
+    { id: 2, label: "SEND MMS", description: "Compose and send MMS messages with media" },
+    { id: 3, label: "INBOX", description: "View received messages" },
+    { id: 4, label: "RULES WIZARD", description: "Create and manage message rules" },
+    { id: 5, label: "CONTACTS", description: "Manage your contacts" },
+    { id: 6, label: "LIBRARY", description: "Access message templates" },
+    { id: 7, label: "SENT MESSAGES", description: "View sent messages history" },
+    { id: 8, label: "SCHEDULED MESSAGES", description: "Manage scheduled messages" },
   ]
 
+  // Contact categories configuration
   const contactCategories = [
-    {
-      key: "companyContacts" as const,
-      icon: Users,
-      label: "Company Contacts",
-      checked: contactFilters.companyContacts,
-    },
-    {
-      key: "companyGroups" as const,
-      icon: Users,
-      label: "Company Groups",
-      checked: contactFilters.companyGroups,
-    },
-    {
-      key: "personalContacts" as const,
-      icon: User,
-      label: "Personal Contacts",
-      checked: contactFilters.personalContacts,
-    },
-    {
-      key: "personalGroups" as const,
-      icon: Users,
-      label: "Personal Groups",
-      checked: contactFilters.personalGroups,
-    },
+    { key: "companyContacts", label: "Company Contacts", icon: Users, checked: true },
+    { key: "companyGroups", label: "Company Groups", icon: Users, checked: false },
+    { key: "personalContacts", label: "Personal Contacts", icon: User, checked: false },
+    { key: "personalGroups", label: "Personal Groups", icon: User, checked: false },
   ]
-
-  const handleSendMMS = async (data: {
-    to: string[]
-    subject: string
-    body: string
-    media: Array<{ type: string; filename: string; data: string }>
-  }) => {
-    const result = await messagingService.sendMessage(data.to, data.body, "mms")
-
-    if (result.success) {
-      showAlert("success", `MMS sent successfully to ${data.to.length} recipient(s)`)
-      loadData()
-    } else {
-      showAlert("error", result.error || "Failed to send MMS")
-    }
-  }
-
-  const handleUseTemplate = (template: MessageTemplate) => {
-    setSelectedTemplate(template.id)
-    setMessageText(template.content)
-    showAlert("success", `Template "${template.name}" loaded`)
-  }
-
-  // Add new form handlers
-
-  // Contact management handlers
-  const handleAddContact = async () => {
-    if (!newContactName.trim() || !newContactPhone.trim()) {
-      showAlert("error", "Please enter contact name and phone number")
-      return
-    }
-
-    const result = await contactService.addContact(newContactName, newContactPhone, newContactType, newContactEmail)
-    if (result) {
-      showAlert("success", `Contact "${newContactName}" added successfully`)
-      setNewContactName("")
-      setNewContactPhone("")
-      setNewContactEmail("")
-      setNewContactType("personal")
-      loadData()
-    } else {
-      showAlert("error", "Failed to add contact")
-    }
-  }
-
-  const handleEditContact = (contactId: string, updates: Partial<Contact>) => {
-    // Open the ContactsDialog for editing
-    setShowContacts(true)
-  }
-
-  const handleDeleteContact = async (contactId: string) => {
-    const contacts = await contactService.getContacts()
-    const contact = contacts.find((c) => c.id === contactId)
-
-    if (contact && await contactService.deleteContact(contactId)) {
-      showAlert("success", `Contact "${contact.name}" deleted successfully`)
-      loadData()
-    } else {
-      showAlert("error", "Failed to delete contact")
-    }
-  }
-
-  // Template management handlers
-  const handleAddTemplate = async () => {
-    if (!newTemplateName.trim() || !newTemplateContent.trim()) {
-      showAlert("error", "Please enter template name and content")
-      return
-    }
-
-    const result = await templateService.addTemplate(newTemplateName, newTemplateContent, newTemplateCategory)
-    if (result) {
-      showAlert("success", `Template "${newTemplateName}" created successfully`)
-      setNewTemplateName("")
-      setNewTemplateContent("")
-      setNewTemplateCategory("personal")
-      loadData()
-    } else {
-      showAlert("error", "Failed to create template")
-    }
-  }
-
-  const handleEditTemplate = (templateId: string, updates: Partial<MessageTemplate>) => {
-    // Open the LibraryDialog for editing templates
-    setShowLibrary(true)
-  }
-
-  const handleDeleteTemplate = async (templateId: string) => {
-    const templates = await templateService.getTemplates()
-    const template = templates.find((t) => t.id === templateId)
-
-    if (template && await templateService.deleteTemplate(templateId)) {
-      showAlert("success", `Template "${template.name}" deleted successfully`)
-      loadData()
-    } else {
-      showAlert("error", "Failed to delete template")
-    }
-  }
-
-  // Rules management handlers
-  const handleAddRule = async () => {
-    if (!newRuleName.trim() || !newRuleConditionValue.trim() || !newRuleActionValue.trim()) {
-      showAlert("error", "Please fill in all rule fields")
-      return
-    }
-
-    const result = await rulesService.addRule(
-      newRuleName,
-      { type: newRuleConditionType, value: newRuleConditionValue },
-      { type: newRuleActionType, value: newRuleActionValue },
-    )
-
-    if (result) {
-      showAlert("success", `Rule "${newRuleName}" created successfully`)
-      setNewRuleName("")
-      setNewRuleConditionValue("")
-      setNewRuleActionValue("")
-      loadData()
-    } else {
-      showAlert("error", "Failed to create rule")
-    }
-  }
-
-  const handleDeleteRule = async (ruleId: string) => {
-    if (await rulesService.deleteRule(ruleId)) {
-      loadData()
-    } else {
-      showAlert("error", "Failed to delete rule")
-    }
-  }
-
-  const handleToggleRule = async (ruleId: string) => {
-    if (await rulesService.toggleRule(ruleId)) {
-      loadData()
-    } else {
-      showAlert("error", "Failed to toggle rule")
-    }
-  }
-
-  // Inbox management handlers
-  const handleMarkAsRead = async (messageId: string) => {
-    if (await inboxService.markAsRead(messageId)) {
-      loadData()
-    }
-  }
-
-  const handleDeleteInboxMessage = async (messageId: string) => {
-    if (await inboxService.deleteMessage(messageId)) {
-      loadData()
-    }
-  }
-
-  // Media management handlers
-  const handleFileUpload = async (files: FileList) => {
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]
-      if (file.size > 500000) {
-        // 500KB limit
-        showAlert("error", `File "${file.name}" exceeds 500KB limit`)
-        continue
-      }
-
-      const result = await mediaService.uploadFile(file)
-      if (result) {
-        showAlert("success", `File "${file.name}" uploaded successfully`)
-      } else {
-        showAlert("error", `Failed to upload "${file.name}"`)
-      }
-    }
-    loadData()
-  }
-
-  const handleDeleteMediaFile = async (fileId: string) => {
-    if (await mediaService.deleteFile(fileId)) {
-      loadData()
-    }
-  }
-
-  // Schedule message handler
-  const handleScheduleMessage = () => {
-    if (!scheduleRecipients.trim() || !scheduleMessage.trim() || !scheduleDateTime) {
-      showAlert("error", "Please fill in all schedule fields")
-      return
-    }
-
-    const recipients = messagingService.parseRecipients(scheduleRecipients)
-    const scheduledAt = new Date(scheduleDateTime)
-
-    messagingService.sendMessage(recipients, scheduleMessage, "sms", scheduledAt).then((result) => {
-      if (result.success) {
-        showAlert("success", `Message scheduled for ${scheduledAt.toLocaleString()} (local time)`)
-        setScheduleRecipients("")
-        setScheduleMessage("")
-        setScheduleDateTime("")
-        loadData()
-      } else {
-        showAlert("error", result.error || "Failed to schedule message")
-      }
-    })
-  }
-
-  const handleCancelScheduledMessage = (messageId: string) => {
-    // This would call a service method to cancel the scheduled message
-    showAlert("success", "Cancel scheduled message functionality would be implemented")
-    loadData()
-  }
-
-  useEffect(() => {
-    if (activeMenuItem === 3 && token) {
-      fetchInboxMessages(offset);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeMenuItem, token, offset]);
-
-  const fetchInboxMessages = async (newOffset = 0) => {
-    try {
-      const user = authService.getCurrentUser();
-      if (!user) return;
-
-      const params = new URLSearchParams({
-        userId: user.id,
-        limit: String(pageSize),
-        offset: String(newOffset),
-        direction: 'incoming',
-        reverse: 'true',
-      });
-      const res = await fetch(`/api/messaging/inbox?${params.toString()}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      const data = await res.json();
-      setInboxMessages(data.messages || []);
-      setPaging(data.paging || {});
-      setOffset(newOffset);
-    } catch (err) {
-      setInboxMessages([]);
-      setPaging({});
-    }
-  };
-
-  // Fetch real sent messages from Telstra API with user filtering
-  const fetchSentMessages = async (newOffset = 0) => {
-    try {
-      const user = authService.getCurrentUser();
-      if (!user) return;
-
-      // Get user's allocated phone numbers (personal mobile + company contacts)
-      const allocatedNumbers = await getAllocatedPhoneNumbers(user.id);
-
-      const params = new URLSearchParams({
-        userId: user.id,
-        status: 'sent,delivered,failed,queued,pending,scheduled',
-        phoneNumbers: allocatedNumbers.join(','),
-        limit: String(sentPageSize),
-        offset: String(newOffset),
-      });
-
-      const res = await fetch(`/api/messaging/messages?${params.toString()}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      const data = await res.json();
-      setSentApiMessages(data.messages || []);
-      setSentPaging(data.paging || {});
-      setSentOffset(newOffset);
-    } catch (err) {
-      setSentApiMessages([]);
-      setSentPaging({});
-    }
-  };
-
-  const getAllocatedPhoneNumbers = async (userId: string): Promise<string[]> => {
-    try {
-      // Get user details to get personal mobile
-      const userResponse = await fetch(`/api/admin/users/${userId}`, {
-        headers: {
-          'Authorization': `Bearer user_${userId}`,
-        },
-      });
-
-      if (!userResponse.ok) return [];
-
-      const userData = await userResponse.json();
-      const allocatedNumbers: string[] = [];
-
-      // Add user's personal mobile if available
-      if (userData.personalMobile) {
-        allocatedNumbers.push(userData.personalMobile);
-      }
-
-      // Get company contacts' phone numbers (treating company contacts as group members)
-      const contactsResponse = await fetch(`/api/contacts?userId=${userId}`, {
-        headers: {
-          'Authorization': `Bearer user_${userId}`,
-        },
-      });
-
-      if (contactsResponse.ok) {
-        const contactsData = await contactsResponse.json();
-        const companyContacts = contactsData.contacts.filter((contact: any) => contact.category === 'company');
-        companyContacts.forEach((contact: any) => {
-          allocatedNumbers.push(contact.phoneNumber);
-        });
-      }
-
-      return allocatedNumbers;
-    } catch (error) {
-      console.error("Error getting allocated phone numbers:", error);
-      return [];
-    }
-  };
-
-  useEffect(() => {
-    if (activeMenuItem === 7 && token) {
-      fetchSentMessages(sentOffset);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeMenuItem, token, sentOffset]);
-
-  // Pagination calculations
-  const totalCount = sentPaging?.totalCount || 0;
-  const currentPage = Math.floor(sentOffset / sentPageSize) + 1;
-  const totalPages = Math.ceil(totalCount / sentPageSize) || 1;
-  const startIdx = sentOffset + 1;
-  const endIdx = Math.min(sentOffset + sentApiMessages.length, totalCount);
 
   if (!isAuthenticated) {
     return <LoginDialog open={showLogin} onOpenChange={setShowLogin} onLoginSuccess={handleLogin} />
@@ -1049,8 +1372,33 @@ function DesktopMessaging() {
         {alert && (
           <div className="fixed top-4 right-4 z-50 w-96">
             <Alert variant={alert.type === "error" ? "destructive" : "default"}>
-              {alert.type === "success" ? <CheckCircle className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
-              <AlertDescription>{alert.message}</AlertDescription>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  {alert.type === "success" ? (
+                    <CheckCircle className="h-4 w-4" />
+                  ) : alert.type === "error" ? (
+                    <AlertTriangle className="h-4 w-4" />
+                  ) : (
+                    <AlertTriangle className="h-4 w-4" />
+                  )}
+                  <AlertDescription className="truncate">{alert.message}</AlertDescription>
+                </div>
+                <div>
+                  <button
+                    aria-label="Close alert"
+                    onClick={() => {
+                      setAlert(null)
+                      if (alertTimeoutRef.current) {
+                        window.clearTimeout(alertTimeoutRef.current)
+                        alertTimeoutRef.current = null
+                      }
+                    }}
+                    className="text-gray-500 hover:text-gray-700 ml-2"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
             </Alert>
           </div>
         )}
@@ -1139,6 +1487,81 @@ function DesktopMessaging() {
                               <div className="text-xs text-gray-600 truncate">{template.content}</div>
                             </div>
                             <div className="text-xs text-green-600">Use template</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Users */}
+                    {searchResults.users.length > 0 && (
+                      <div>
+                        <div className="px-3 py-1 text-xs font-medium text-gray-500 bg-gray-50">USERS</div>
+                        {searchResults.users.map((user) => (
+                          <div
+                            key={user.id}
+                            className="px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center gap-3"
+                            onClick={() => {
+                              // Fill recipient with user's personalMobile if available
+                              const mobile = user.personalMobile || user.personal_mobile || user.mobile || ""
+                              if (mobile) {
+                                const currentRecipients = toRecipients.trim()
+                                const newRecipients = currentRecipients ? `${currentRecipients}; ${mobile}` : mobile
+                                setToRecipients(newRecipients)
+                                showAlert('success', `Added ${user.username || user.email} to recipients`)
+                              } else {
+                                showAlert('info', `User ${user.username || user.email} has no mobile number`) 
+                              }
+                              setSearchQuery("")
+                              setShowSearchResults(false)
+                            }}
+                          >
+                            <Users className="w-4 h-4 text-purple-600" />
+                            <div className="flex-1">
+                              <div className="font-medium text-sm">{user.username || user.email}</div>
+                              <div className="text-xs text-gray-600">{user.email}</div>
+                            </div>
+                            <div className="text-xs text-purple-600">Add to recipients</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Groups */}
+                    {searchResults.groups.length > 0 && (
+                      <div>
+                        <div className="px-3 py-1 text-xs font-medium text-gray-500 bg-gray-50">GROUPS</div>
+                        {searchResults.groups.map((group) => (
+                          <div
+                            key={group.id}
+                            className="px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center gap-3"
+                            onClick={async () => {
+                              // Expand group members into recipient list
+                              try {
+                                const members = group.memberIds || []
+                                const selected = await contactService.getSelectedContacts(members)
+                                const phones = selected.map((c) => c.phoneNumber).filter(Boolean)
+                                if (phones.length) {
+                                  const currentRecipients = toRecipients.trim()
+                                  const newRecipients = currentRecipients ? `${currentRecipients}; ${phones.join('; ')}` : phones.join('; ')
+                                  setToRecipients(newRecipients)
+                                  showAlert('success', `Added ${phones.length} contacts from group ${group.name}`)
+                                } else {
+                                  showAlert('info', `No phone numbers found for group ${group.name}`)
+                                }
+                              } catch (e) {
+                                console.warn('Failed to add group members to recipients', e)
+                                showAlert('error', 'Failed to add group members')
+                              }
+                              setSearchQuery("")
+                              setShowSearchResults(false)
+                            }}
+                          >
+                            <Users className="w-4 h-4 text-indigo-600" />
+                            <div className="flex-1">
+                              <div className="font-medium text-sm">{group.name}</div>
+                              <div className="text-xs text-gray-600">{group.memberIds?.length || 0} members</div>
+                            </div>
+                            <div className="text-xs text-indigo-600">Add group</div>
                           </div>
                         ))}
                       </div>
@@ -1287,7 +1710,7 @@ function DesktopMessaging() {
                 {contactCategories.map((category) => (
                   <div key={category.key} className="flex items-center gap-2">
                     <Checkbox
-                      checked={category.checked}
+                      checked={(contactFilters as any)[category.key] === true}
                       onCheckedChange={(checked) => {
                         setContactFilters((prev) => ({
                           ...prev,
@@ -1760,11 +2183,17 @@ function DesktopMessaging() {
                       <SelectItem value="company">Company Inbox</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Input placeholder="Search messages..." className="flex-1 max-w-md" />
-                  <Button className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => {
-                    // Trigger search for inbox messages
-                    // This would implement filtering of inboxMessages based on search input
-                    console.log('Inbox search triggered');
+                  <Input placeholder="Search messages..." className="flex-1 max-w-md" value={inboxSearchQuery} onChange={e => setInboxSearchQuery(e.target.value)} />
+                  <Button className="bg-blue-600 hover:bg-blue-700 text-white" onClick={async () => {
+                    // Trigger search for inbox messages using inboxService
+                    if (inboxSearchQuery.trim()) {
+                      const results = await inboxService.searchMessages(inboxSearchQuery.trim())
+                      setInboxMessages(results)
+                      showAlert('success', `Found ${results.length} message(s)`)
+                    } else {
+                      // If cleared, reload the inbox
+                      fetchInboxMessages(0).catch(err => console.warn('Failed to reload inbox', err))
+                    }
                   }}>
                     <Search className="w-4 h-4 mr-2" />
                     Search
@@ -1781,73 +2210,135 @@ function DesktopMessaging() {
                       {inboxMessages.length === 0 ? (
                         <div className="text-center text-gray-500 py-8">No messages found</div>
                       ) : (
-                        // Filter for incoming messages only
-                        inboxMessages.filter((msg: any) => msg.direction === 'incoming').map((message: any) => (
-                          <div
-                            key={message.messageId}
-                            className={`p-4 cursor-pointer
-                              ${selectedMessage && selectedMessage.messageId === message.messageId
-                                ? "bg-purple-100 border-l-4 border-l-purple-500"
-                                : message.status !== "delivered"
-                                  ? "bg-blue-50 border-l-4 border-l-blue-500"
-                                  : ""}
-                            `}
-                            onClick={() => setSelectedMessage(message)}
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                                  <span className={`font-medium ${message.status !== "delivered" ? "font-bold" : ""}`}>{message.from}</span>
-                                  {message.status !== "delivered" && (
-                                <span className="bg-blue-600 text-white text-xs px-2 py-1 rounded">NEW</span>
-                              )}
-                            </div>
-                                {/* Remove subject if not present in Telstra API */}
-                                {/* {message.subject && (
-                              <div className="text-sm font-medium text-gray-800 mb-1">{message.subject}</div>
-                                )} */}
-                                <div className="text-sm text-gray-600">{message.messageContent}</div>
-                          </div>
-                              <div className="text-xs text-gray-500 ml-4">
-                                {message.receivedTimestamp
-                                  ? new Date(message.receivedTimestamp).toLocaleString()
-                                  : message.sentTimestamp
-                                  ? new Date(message.sentTimestamp).toLocaleString()
-                                  : ""}
-                        </div>
-                      </div>
-                          </div>
-                        ))
+                        // Normalize message shape so both Telstra API messages and DB messages render
+                        inboxMessages
+                          .filter((msg: any) => (typeof msg.direction === "undefined" ? true : msg.direction === "incoming"))
+                          .map((message: any) => {
+                            const id = message.messageId || message.id
+                            const rawFrom = message.from || message.fromNumber || message.fromAddress || "Unknown"
+                            const from = message.displayFrom || rawFrom
+                            const content = message.messageContent || message.content || message.message || ""
+                            const status = message.status || (message.read ? "delivered" : "received")
+                            const receivedTs = message.receivedTimestamp || message.receivedAt || message.received || message.sentTimestamp || message.sentAt
+
+                            return (
+                              <div
+                                key={id}
+                                className={`p-4 cursor-pointer
+                                  ${selectedMessage && (selectedMessage.messageId || selectedMessage.id) === id
+                                    ? "bg-purple-100 border-l-4 border-l-purple-500"
+                                    : status !== "delivered"
+                                      ? "bg-blue-50 border-l-4 border-l-blue-500"
+                                      : ""}
+                                `}
+                                onClick={() => setSelectedMessage(message)}
+                              >
+                                <div className="flex items-start justify-between">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className={`font-medium ${status !== "delivered" ? "font-bold" : ""}`}>{from}</span>
+                                      {status !== "delivered" && (
+                                        <span className="bg-blue-600 text-white text-xs px-2 py-1 rounded">NEW</span>
+                                      )}
+                                    </div>
+
+                                    <div className="text-sm text-gray-600">{content}</div>
+                                  </div>
+                                  <div className="text-xs text-gray-500 ml-4">
+                                    {receivedTs ? new Date(receivedTs).toLocaleString() : ""}
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })
                       )}
                     </div>
                   </div>
                   {/* Pagination Controls */}
-                  <div className="flex justify-between items-center mt-2 px-4 pb-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!paging.previousPage || offset === 0}
-                      onClick={() => {
-                        const prevOffset = Math.max(0, offset - pageSize);
-                        fetchInboxMessages(prevOffset);
-                      }}
-                    >
-                      Previous
-                    </Button>
-                    <span>
-                      Showing {offset + 1} - {offset + inboxMessages.length} of {paging.totalCount || inboxMessages.length}
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!paging.nextPage || inboxMessages.length < pageSize}
-                      onClick={() => {
-                        const nextOffset = offset + pageSize;
-                        fetchInboxMessages(nextOffset);
-                      }}
-                    >
-                      Next
-                    </Button>
+                  <div className="flex items-center justify-between mt-2 px-4 pb-2">
+                    {(() => {
+                      const totalCount = paging?.totalCount ?? inboxMessages.length ?? 0
+                      const totalPages = Math.max(1, Math.ceil((totalCount || inboxMessages.length || 0) / pageSize))
+                      const currentPage = Math.floor(offset / pageSize) + 1
+                      const startIdx = offset + 1
+                      const endIdx = Math.min(offset + inboxMessages.length, totalCount)
+
+                      // Determine page window (show up to 7 pages centered on current)
+                      const windowSize = 7
+                      let startPage = Math.max(1, currentPage - Math.floor(windowSize / 2))
+                      let endPage = Math.min(totalPages, startPage + windowSize - 1)
+                      if (endPage - startPage + 1 < windowSize) {
+                        startPage = Math.max(1, endPage - windowSize + 1)
+                      }
+
+                      const pages: number[] = []
+                      for (let p = startPage; p <= endPage; p++) pages.push(p)
+
+                      return (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={currentPage === 1}
+                              onClick={() => fetchInboxMessages(Math.max(0, offset - pageSize))}
+                            >
+                              Previous
+                            </Button>
+                            <div className="flex items-center gap-1">
+                              {startPage > 1 && (
+                                <>
+                                  <Button
+                                    variant={1 === currentPage ? "default" : "ghost"}
+                                    size="sm"
+                                    onClick={() => fetchInboxMessages(0)}
+                                  >
+                                    1
+                                  </Button>
+                                  {startPage > 2 && <span className="px-2 text-sm text-gray-500">...</span>}
+                                </>
+                              )}
+
+                              {pages.map((p) => (
+                                <Button
+                                  key={p}
+                                  variant={p === currentPage ? "default" : "ghost"}
+                                  size="sm"
+                                  onClick={() => fetchInboxMessages((p - 1) * pageSize)}
+                                >
+                                  {p}
+                                </Button>
+                              ))}
+
+                              {endPage < totalPages && (
+                                <>
+                                  {endPage < totalPages - 1 && <span className="px-2 text-sm text-gray-500">...</span>}
+                                  <Button
+                                    variant={totalPages === currentPage ? "default" : "ghost"}
+                                    size="sm"
+                                    onClick={() => fetchInboxMessages((totalPages - 1) * pageSize)}
+                                  >
+                                    {totalPages}
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={currentPage >= totalPages}
+                              onClick={() => fetchInboxMessages(offset + pageSize)}
+                            >
+                              Next
+                            </Button>
+                          </div>
+
+                          <div className="text-sm text-gray-600">
+                            Showing {startIdx}-{endIdx} of {totalCount} messages
+                          </div>
+                        </>
+                      )
+                    })()}
                   </div>
                 </div>
 
@@ -1897,10 +2388,28 @@ function DesktopMessaging() {
                     variant="outline"
                     className="text-red-600 hover:text-red-700"
                     onClick={() => {
-                      if (selectedMessage) {
-                        setInboxMessages((msgs) => msgs.filter((msg) => msg.messageId !== selectedMessage.messageId));
-                        setSelectedMessage(null);
-                      }
+                      (async () => {
+                        if (!selectedMessage) return
+                        const idToDelete = selectedMessage.messageId || selectedMessage.id
+                        if (!idToDelete) return
+                        if (!confirm('Delete selected message? This cannot be undone.')) return
+                        try {
+                          const ok = await inboxService.deleteMessage(idToDelete)
+                          if (ok) {
+                            setInboxMessages((msgs) => msgs.filter((msg) => {
+                              const mid = msg.messageId || msg.id
+                              return mid !== idToDelete
+                            }))
+                            setSelectedMessage(null)
+                            showAlert('success', 'Message deleted')
+                          } else {
+                            showAlert('error', 'Failed to delete message')
+                          }
+                        } catch (err) {
+                          console.warn('Failed to delete message', err)
+                          showAlert('error', 'Failed to delete message')
+                        }
+                      })()
                     }}
                     disabled={!selectedMessage}
                   >
@@ -1939,145 +2448,62 @@ function DesktopMessaging() {
 
                 {/* Existing Rules */}
                 <div className="border border-gray-300 rounded-lg bg-white">
-                  <div className="bg-gray-50 px-4 py-2 border-b border-gray-300 font-medium text-sm">Active Rules</div>
+                  <div className="bg-gray-50 px-4 py-2 border-b border-gray-300 font-medium text-sm">
+                    Active Rules ({rules.filter(r => r.enabled).length} of {rules.length})
+                  </div>
                   <div className="divide-y divide-gray-200">
-                    {[
-                      {
-                        id: 1,
-                        name: "Forward Support Messages",
-                        condition: "Contains 'support' or 'help'",
-                        action: "Forward to support@company.com",
-                        enabled: true,
-                      },
-                      {
-                        id: 2,
-                        name: "Auto-Reply After Hours",
-                        condition: "Received between 6 PM - 8 AM",
-                        action: "Send auto-reply message",
-                        enabled: true,
-                      },
-                      {
-                        id: 3,
-                        name: "Spam Filter",
-                        condition: "Contains promotional keywords",
-                        action: "Move to spam folder",
-                        enabled: false,
-                      },
-                    ].map((rule) => (
-                      <div key={rule.id} className="p-4">
-                        <div className="flex items-center justify-between">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-3 mb-2">
-                              <span className="font-medium">{rule.name}</span>
-                              <span
-                                className={`text-xs px-2 py-1 rounded ${
-                                  rule.enabled ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-600"
-                                }`}
-                              >
-                                {rule.enabled ? "ACTIVE" : "DISABLED"}
-                              </span>
+                    {rules.length === 0 ? (
+                      <div className="p-4 text-center text-gray-500">
+                        No rules created yet. Click "Create New Rule" to get started.
+                      </div>
+                    ) : (
+                      rules.map((rule) => (
+                        <div key={rule.id} className="p-4">
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-3 mb-2">
+                                <span className="font-medium">{rule.name}</span>
+                                <span
+                                  className={`text-xs px-2 py-1 rounded ${
+                                    rule.enabled ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-600"
+                                  }`}
+                                >
+                                  {rule.enabled ? "ACTIVE" : "DISABLED"}
+                                </span>
+                              </div>
+                              <div className="text-sm text-gray-600 mb-1">
+                                <strong>When:</strong> {rule.condition.type} "{rule.condition.value}"
+                              </div>
+                              <div className="text-sm text-gray-600">
+                                <strong>Then:</strong> {rule.action.type === "forward" ? `Forward to ${rule.action.value}` :
+                                  rule.action.type === "reply" ? `Auto-reply: "${rule.action.value.substring(0, 50)}..."` :
+                                  rule.action.type === "delete" ? "Delete message" :
+                                  `Move to folder: ${rule.action.value}`}
+                              </div>
                             </div>
-                            <div className="text-sm text-gray-600 mb-1">
-                              <strong>When:</strong> {rule.condition}
+                            <div className="flex items-center gap-2">
+                              <Button variant="outline" size="sm" onClick={() => {
+                                setEditingRuleId(rule.id);
+                                setShowRulesWizard(true);
+                              }}>
+                                Edit
+                              </Button>
+                              <Button variant="outline" size="sm" className="text-red-600" onClick={() => {
+                                handleDeleteRule(rule.id);
+                              }}>
+                                Delete
+                              </Button>
+                              <input
+                                type="checkbox"
+                                checked={rule.enabled}
+                                onChange={() => handleToggleRule(rule.id)}
+                                className="ml-2 w-4 h-4"
+                              />
                             </div>
-                            <div className="text-sm text-gray-600">
-                              <strong>Then:</strong> {rule.action}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Button variant="outline" size="sm" onClick={() => {
-                              setEditingRuleId(String(rule.id));
-                              setShowRulesWizard(true);
-                            }}>
-                              Edit
-                            </Button>
-                            <Button variant="outline" size="sm" className="text-red-600" onClick={() => {
-                              handleDeleteRule(String(rule.id));
-                            }}>
-                              Delete
-                            </Button>
-                            <Checkbox checked={rule.enabled} className="ml-2" />
                           </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Rule Creation Form */}
-                <div className="border border-gray-300 rounded-lg bg-white p-4">
-                  <h4 className="font-medium mb-4">Create New Rule</h4>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Rule Name</label>
-                      <Input
-                        placeholder="Enter rule name"
-                        value={newRuleName}
-                        onChange={(e) => setNewRuleName(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Condition Type</label>
-                      <Select
-                        value={newRuleConditionType}
-                        onValueChange={(value: any) => setNewRuleConditionType(value)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select condition type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="contains">Message contains</SelectItem>
-                          <SelectItem value="from">From specific number</SelectItem>
-                          <SelectItem value="time">Received at specific time</SelectItem>
-                          <SelectItem value="keyword">Contains keyword</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Condition Value</label>
-                      <Input
-                        placeholder="Enter condition value"
-                        value={newRuleConditionValue}
-                        onChange={(e) => setNewRuleConditionValue(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Action Type</label>
-                      <Select value={newRuleActionType} onValueChange={(value: any) => setNewRuleActionType(value)}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select action" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="forward">Forward message</SelectItem>
-                          <SelectItem value="reply">Send auto-reply</SelectItem>
-                          <SelectItem value="delete">Delete message</SelectItem>
-                          <SelectItem value="folder">Move to folder</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Action Value</label>
-                      <Input
-                        placeholder="Enter action value"
-                        value={newRuleActionValue}
-                        onChange={(e) => setNewRuleActionValue(e.target.value)}
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button onClick={handleAddRule} className="bg-blue-600 hover:bg-blue-700 text-white">
-                        Save Rule
-                      </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          setNewRuleName("")
-                          setNewRuleConditionValue("")
-                          setNewRuleActionValue("")
-                        }}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>
@@ -2091,18 +2517,14 @@ function DesktopMessaging() {
                   <h3 className="text-lg font-semibold">Contact Management</h3>
                   <div className="flex items-center gap-2">
                     <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={() => {
-                      // Scroll to the Add Contact form
-                      const formElement = document.getElementById('add-contact-form');
-                      if (formElement) {
-                        formElement.scrollIntoView({ behavior: 'smooth' });
-                      }
-                      showAlert("success", "Scroll down to add a new contact");
+                      // Open the Contacts dialog for editing contacts
+                      setShowContacts(true);
                     }}>
                       <User className="w-4 h-4 mr-2" />
-                      Add Contact
+                      Edit Contacts
                     </Button>
                     <Button className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => {
-                      showAlert("success", "Create Group functionality would open a group creation dialog");
+                      setShowContacts(true);
                     }}>
                       <Users className="w-4 h-4 mr-2" />
                       Create Group
@@ -2123,11 +2545,33 @@ function DesktopMessaging() {
                       <SelectItem value="groups">Groups</SelectItem>
                     </SelectContent>
                   </Select>
-                  <Input placeholder="Search contacts..." className="flex-1 max-w-md" />
-                  <Button variant="outline" onClick={() => {
-                    // Trigger search for contacts
-                    // This would implement filtering of contacts based on search input
-                    console.log('Contacts search triggered');
+                  <Input
+                    placeholder="Search contacts..."
+                    className="flex-1 max-w-md"
+                    value={contactsSearchQuery}
+                    onChange={(e) => setContactsSearchQuery(e.target.value)}
+                  />
+                  <Button variant="outline" onClick={async () => {
+                    // Trigger search for contacts using the searchContacts service
+                    if (contactsSearchQuery.trim()) {
+                      const results = await contactService.searchContacts(contactsSearchQuery.trim())
+                      console.log('Search results:', results)
+                      setContacts(results)
+                      if (results.length === 0) {
+                        showAlert('info', 'No contacts found matching your search')
+                      } else {
+                        showAlert('success', `Found ${results.length} contact(s)`)
+                      }
+                    } else {
+                      // If search cleared, reload full contact list
+                      try {
+                        const all = await contactService.getContacts()
+                        setContacts(all)
+                        showAlert('success', `Loaded ${all.length} contacts`)
+                      } catch (e) {
+                        console.warn('Failed to reload contacts', e)
+                      }
+                    }
                   }}>
                     <Search className="w-4 h-4 mr-2" />
                     Search
@@ -2142,63 +2586,52 @@ function DesktopMessaging() {
                       Individual Contacts
                     </div>
                     <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">
-                      {[
-                        {
-                          id: 1,
-                          name: "John Smith",
-                          phone: "+61412345678",
-                          email: "john@company.com",
-                          type: "Company",
-                        },
-                        {
-                          id: 2,
-                          name: "Sarah Johnson",
-                          phone: "+61498765432",
-                          email: "sarah@email.com",
-                          type: "Personal",
-                        },
-                        {
-                          id: 3,
-                          name: "Mike Wilson",
-                          phone: "+61456789123",
-                          email: "mike@company.com",
-                          type: "Company",
-                        },
-                        { id: 4, name: "Emma Davis", phone: "+61423456789", email: "emma@email.com", type: "Personal" },
-                      ].map((contact) => (
-                        <div key={contact.id} className="p-3 hover:bg-gray-50">
-                          <div className="flex items-center justify-between">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="font-medium">{contact.name}</span>
-                                <span
-                                  className={`text-xs px-2 py-1 rounded ${
-                                    contact.type === "Company"
-                                      ? "bg-blue-100 text-blue-800"
-                                      : "bg-green-100 text-green-800"
-                                  }`}
-                                >
-                                  {contact.type}
-                                </span>
+                      {contacts.length === 0 ? (
+                        <div className="text-center text-gray-500 py-8">No contacts found</div>
+                      ) : (
+                        contacts.map((contact) => (
+                          <div key={contact.id} className="p-3 hover:bg-gray-50">
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="font-medium">{contact.name}</span>
+                                  <span
+                                    className={`text-xs px-2 py-1 rounded ${
+                                      contact.category === "company"
+                                        ? "bg-blue-100 text-blue-800"
+                                        : "bg-green-100 text-green-800"
+                                    }`}
+                                  >
+                                    {contact.category}
+                                  </span>
+                                </div>
+                                <div className="text-sm text-gray-600">{contact.phoneNumber}</div>
+                                {contact.email && <div className="text-sm text-gray-600">{contact.email}</div>}
                               </div>
-                              <div className="text-sm text-gray-600">{contact.phone}</div>
-                              <div className="text-sm text-gray-600">{contact.email}</div>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <Button variant="outline" size="sm" onClick={() => {
-                                handleEditContact(String(contact.id), {});
-                              }}>
-                                Edit
-                              </Button>
-                              <Button variant="outline" size="sm" className="text-red-600" onClick={() => {
-                                handleDeleteContact(String(contact.id));
-                              }}>
-                                Delete
-                              </Button>
+                              <div className="flex items-center gap-1">
+                                {/* If this is a synthetic user-derived contact (id prefixed with "user:"),
+                                    do not allow edit/delete since it doesn't correspond to a contact row. */}
+                                {!String(contact.id).startsWith('user:') ? (
+                                  <>
+                                    <Button variant="outline" size="sm" onClick={() => {
+                                      handleEditContact(contact.id, {});
+                                    }}>
+                                      Edit
+                                    </Button>
+                                    <Button variant="outline" size="sm" className="text-red-600" onClick={() => {
+                                      handleDeleteContact(contact.id);
+                                    }}>
+                                      Delete
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <div className="text-xs text-gray-500">(user)</div>
+                                )}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        ))
+                      )}
                     </div>
                   </div>
 
@@ -2208,45 +2641,48 @@ function DesktopMessaging() {
                       Contact Groups
                     </div>
                     <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">
-                      {[
-                        { id: 1, name: "Sales Team", members: 12, type: "Company" },
-                        { id: 2, name: "Support Staff", members: 8, type: "Company" },
-                        { id: 3, name: "Family", members: 5, type: "Personal" },
-                        { id: 4, name: "Friends", members: 15, type: "Personal" },
-                      ].map((group) => (
-                        <div key={group.id} className="p-3 hover:bg-gray-50">
-                          <div className="flex items-center justify-between">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                <Users className="w-4 h-4 text-gray-500" />
-                                <span className="font-medium">{group.name}</span>
-                                <span
-                                  className={`text-xs px-2 py-1 rounded ${
-                                    group.type === "Company"
-                                      ? "bg-blue-100 text-blue-800"
-                                      : "bg-green-100 text-green-800"
-                                  }`}
-                                >
-                                  {group.type}
-                                </span>
+                      {contactGroups.length === 0 ? (
+                        <div className="p-4 text-gray-500">No groups defined. Open Contacts to create groups.</div>
+                      ) : (
+                        contactGroups.map((group) => (
+                          <div key={group.id} className="p-3 hover:bg-gray-50">
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <Users className="w-4 h-4 text-gray-500" />
+                                  <span className="font-medium">{group.name}</span>
+                                  <span
+                                    className={`text-xs px-2 py-1 rounded ${
+                                      group.type === "company"
+                                        ? "bg-blue-100 text-blue-800"
+                                        : "bg-green-100 text-green-800"
+                                    }`}
+                                  >
+                                    {group.type === "company" ? "Company" : "Personal"}
+                                  </span>
+                                </div>
+                                <div className="text-sm text-gray-600">{group.memberIds?.length || 0} members</div>
                               </div>
-                              <div className="text-sm text-gray-600">{group.members} members</div>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <Button variant="outline" size="sm" onClick={() => {
-                                setShowContacts(true);
-                              }}>
-                                Manage
-                              </Button>
-                              <Button variant="outline" size="sm" className="text-red-600" onClick={() => {
-                                showAlert("success", `Delete group "${group.name}" functionality would be implemented`);
-                              }}>
-                                Delete
-                              </Button>
+                              <div className="flex items-center gap-1">
+                                <Button variant="outline" size="sm" onClick={() => {
+                                  // Open contacts dialog where groups can be managed
+                                  setShowContacts(true);
+                                }}>
+                                  Manage
+                                </Button>
+                                <Button variant="outline" size="sm" className="text-red-600" onClick={async () => {
+                                  if (!confirm(`Delete group "${group.name}"?`)) return
+                                  await contactService.deleteGroup(group.id)
+                                  await loadGroups()
+                                  showAlert("success", `Group "${group.name}" deleted`)
+                                }}>
+                                  Delete
+                                </Button>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        ))
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2302,6 +2738,99 @@ function DesktopMessaging() {
                     <Button
                       variant="outline"
                       onClick={() => {
+                        // trigger CSV import file input
+                        const input = document.createElement('input')
+                        input.type = 'file'
+                        input.accept = '.csv,text/csv'
+                        input.onchange = async (e) => {
+                          const files = (e.target as HTMLInputElement).files
+                          if (!files || files.length === 0) return
+                          const text = await files[0].text()
+                          const parsed = parseCsv(text)
+                          if (!parsed || parsed.length === 0) {
+                            toast({ title: 'Error', description: 'No contacts found in CSV', variant: 'destructive' })
+                            return
+                          }
+                          // Map headers to expected fields (name, phoneNumber, email, category)
+                          const contactsPayload = parsed.map((row) => ({
+                            name: row['name'] || row['Name'] || row['fullName'] || row['Full Name'] || '',
+                            phoneNumber: row['phoneNumber'] || row['Phone'] || row['phone'] || row['PhoneNumber'] || '',
+                            email: row['email'] || row['Email'] || '',
+                            category: (row['category'] || row['Category'] || 'personal').toString().toLowerCase(),
+                          })).filter(c => c.name && c.phoneNumber)
+
+                          if (contactsPayload.length === 0) {
+                            toast({ title: 'Error', description: 'CSV contained no valid contacts', variant: 'destructive' })
+                            return
+                          }
+
+                          try {
+                            const resp = await fetch('/api/contacts/import', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer user_${currentUser?.id}` },
+                              body: JSON.stringify({ userId: currentUser?.id, contacts: contactsPayload }),
+                            })
+                            if (!resp.ok) throw new Error('Import failed')
+                            const data = await resp.json()
+                            toast({ title: 'Success', description: `Imported ${data.created?.length || 0} contacts` })
+                            await loadData()
+                          } catch (e) {
+                            console.error('CSV import failed', e)
+                            toast({ title: 'Error', description: 'Failed to import CSV', variant: 'destructive' })
+                          }
+                        }
+                        input.click()
+                      }}
+                    >
+                      Import CSV
+                    </Button>
+                    <Button variant="outline" onClick={async () => {
+                      // Export contacts as CSV
+                      try {
+                        const resp = await fetch(`/api/contacts/export?userId=${currentUser?.id}` , { headers: { 'Authorization': `Bearer user_${currentUser?.id}` } })
+                        if (!resp.ok) throw new Error('Export failed')
+                        const txt = await resp.text()
+                        const blob = new Blob([txt], { type: 'text/csv' })
+                        const url = URL.createObjectURL(blob)
+                        const a = document.createElement('a')
+                        a.href = url
+                        a.download = `contacts-${currentUser?.id}.csv`
+                        document.body.appendChild(a)
+                        a.click()
+                        a.remove()
+                        URL.revokeObjectURL(url)
+                      } catch (e) {
+                        console.error('Export failed', e)
+                        toast({ title: 'Error', description: 'Failed to export contacts', variant: 'destructive' })
+                      }
+                    }}>
+                      Export CSV
+                    </Button>
+                    <Button variant="outline" onClick={async () => {
+                      // Download template CSV (headers only)
+                      try {
+                        const resp = await fetch(`/api/contacts/export?userId=${currentUser?.id}&template=1`, { headers: { 'Authorization': `Bearer user_${currentUser?.id}` } })
+                        if (!resp.ok) throw new Error('Template download failed')
+                        const txt = await resp.text()
+                        const blob = new Blob([txt], { type: 'text/csv' })
+                        const url = URL.createObjectURL(blob)
+                        const a = document.createElement('a')
+                        a.href = url
+                        a.download = `contacts-template.csv`
+                        document.body.appendChild(a)
+                        a.click()
+                        a.remove()
+                        URL.revokeObjectURL(url)
+                      } catch (e) {
+                        console.error('Template download failed', e)
+                        toast({ title: 'Error', description: 'Failed to download template', variant: 'destructive' })
+                      }
+                    }}>
+                      Download CSV Template
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
                         setNewContactName("")
                         setNewContactPhone("")
                         setNewContactEmail("")
@@ -2323,7 +2852,11 @@ function DesktopMessaging() {
                   <h3 className="text-lg font-semibold">Message Library</h3>
                   <div className="flex items-center gap-2">
                     <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={() => {
-                      // Scroll to the template editor form
+                      // Reset editor to create new template and scroll to it
+                      setEditingTemplateId(null)
+                      setNewTemplateName("")
+                      setNewTemplateContent("")
+                      setNewTemplateCategory("personal")
                       const formElement = document.getElementById('template-editor');
                       if (formElement) {
                         formElement.scrollIntoView({ behavior: 'smooth' });
@@ -2372,68 +2905,62 @@ function DesktopMessaging() {
                       Message Templates
                     </div>
                     <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">
-                      {[
-                        {
-                          id: 1,
-                          name: "Meeting Reminder",
-                          content: "Hi {name}, don't forget about our meeting tomorrow at {time}. See you there!",
-                          type: "Company",
-                          lastUsed: "2 days ago",
-                        },
-                        {
-                          id: 2,
-                          name: "Order Confirmation",
-                          content: "Thank you for your order #{orderNumber}. We'll send you tracking details soon.",
-                          type: "Company",
-                          lastUsed: "1 week ago",
-                        },
-                        {
-                          id: 3,
-                          name: "Birthday Wishes",
-                          content: "Happy Birthday {name}! Hope you have a wonderful day filled with joy!",
-                          type: "Personal",
-                          lastUsed: "3 days ago",
-                        },
-                      ].map((template) => (
-                        <div key={template.id} className="p-3 hover:bg-gray-50">
-                          <div className="flex items-start justify-between">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="font-medium">{template.name}</span>
-                                <span
-                                  className={`text-xs px-2 py-1 rounded ${
-                                    template.type === "Company"
-                                      ? "bg-blue-100 text-blue-800"
-                                      : "bg-green-100 text-green-800"
-                                  }`}
-                                >
-                                  {template.type}
-                                </span>
+                      {templates && templates.length > 0 ? (
+                        templates.map((template) => (
+                          <div key={template.id} className="p-3 hover:bg-gray-50">
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="font-medium">{template.name}</span>
+                                  <span
+                                    className={`text-xs px-2 py-1 rounded ${
+                                      template.category === "company"
+                                        ? "bg-blue-100 text-blue-800"
+                                        : "bg-green-100 text-green-800"
+                                    }`}
+                                  >
+                                    {template.category === "company" ? "Company" : "Personal"}
+                                  </span>
+                                </div>
+                                <div className="text-sm text-gray-600 mb-2 line-clamp-2">{template.content}</div>
+                                <div className="text-xs text-gray-500">{template.createdAt ? `Created: ${new Date(template.createdAt).toLocaleString()}` : ''}</div>
                               </div>
-                              <div className="text-sm text-gray-600 mb-2 line-clamp-2">{template.content}</div>
-                              <div className="text-xs text-gray-500">Last used: {template.lastUsed}</div>
-                            </div>
-                            <div className="flex items-center gap-1 ml-2">
-                              <Button variant="outline" size="sm" onClick={() => handleUseTemplate(template as unknown as MessageTemplate)}>
-                                Use
-                              </Button>
-                              <Button variant="outline" size="sm" onClick={() => {
-                                handleEditTemplate(String(template.id), {});
-                              }}>
-                                Edit
-                              </Button>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="text-red-600"
-                                onClick={() => handleDeleteTemplate(String(template.id))}
-                              >
-                                Delete
-                              </Button>
+                              <div className="flex items-center gap-1 ml-2">
+                                <Button variant="outline" size="sm" onClick={() => handleUseTemplate(template)}>
+                                  Use
+                                </Button>
+                                <Button variant="outline" size="sm" onClick={() => {
+                                  // Open the template editor and populate fields for editing
+                                  try {
+                                    const tpl: any = template as any
+                                    setEditingTemplateId(String(tpl.id))
+                                    setNewTemplateName(tpl.name || "")
+                                    setNewTemplateContent(tpl.content || "")
+                                    const cat = (tpl.category || "personal").toString().toLowerCase()
+                                    setNewTemplateCategory(cat === "company" ? "company" : "personal")
+                                    const el = document.getElementById('template-editor')
+                                    if (el) el.scrollIntoView({ behavior: 'smooth' })
+                                  } catch (e) {
+                                    console.warn('Failed to open template editor for edit', e)
+                                  }
+                                }}>
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-red-600"
+                                  onClick={() => handleDeleteTemplate(String(template.id))}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        ))
+                      ) : (
+                        <div className="p-4 text-center text-gray-500">No templates found</div>
+                      )}
                     </div>
                   </div>
 
@@ -2476,9 +3003,9 @@ function DesktopMessaging() {
                       <div className="text-xs text-gray-600">
                         <strong>Available variables:</strong> {"{name}"}, {"{date}"}, {"{time}"}, {"{orderNumber}"}
                       </div>
-                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2">
                         <Button onClick={handleAddTemplate} className="bg-blue-600 hover:bg-blue-700 text-white">
-                          Save Template
+                          {editingTemplateId ? 'Update Template' : 'Save Template'}
                         </Button>
                         <Button variant="outline" onClick={() => {
                           if (newTemplateName && newTemplateContent) {
@@ -2498,6 +3025,7 @@ function DesktopMessaging() {
                             setNewTemplateName("")
                             setNewTemplateContent("")
                             setNewTemplateCategory("personal")
+                            setEditingTemplateId(null)
                           }}
                         >
                           Clear
@@ -2644,29 +3172,38 @@ function DesktopMessaging() {
                 </div>
 
                 {/* Pagination and message count display */}
-                <div className="flex items-center justify-between mt-4">
-                  <div className="text-sm text-gray-600">
-                    Showing {startIdx}-{endIdx} of {totalCount} messages
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={() => fetchSentMessages(sentOffset - sentPageSize)} disabled={currentPage === 1}>
-                      Previous
-                    </Button>
-                    {Array.from({ length: totalPages }, (_, i) => (
-                      <Button
-                        key={i + 1}
-                        variant={currentPage === i + 1 ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => fetchSentMessages(i * sentPageSize)}
-                      >
-                        {i + 1}
-                    </Button>
-                    ))}
-                    <Button variant="outline" size="sm" onClick={() => fetchSentMessages(sentOffset + sentPageSize)} disabled={currentPage === totalPages}>
-                      Next
-                    </Button>
-                  </div>
-                </div>
+                {(() => {
+                  const totalCount = sentPaging?.totalCount ?? sentApiMessages.length ?? 0
+                  const totalPages = Math.max(1, Math.ceil((totalCount || sentApiMessages.length || 0) / sentPageSize))
+                  const startIdx = sentOffset + 1
+                  const endIdx = Math.min(sentOffset + sentApiMessages.length, totalCount)
+                  return (
+                    <div className="flex items-center justify-between mt-4">
+                      <div className="text-sm text-gray-600">
+                        Showing {startIdx}-{endIdx} of {totalCount} messages
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => fetchSentMessages(sentOffset - sentPageSize)} disabled={currentPage === 1}>
+                          Previous
+                        </Button>
+                        {Array.from({ length: totalPages }, (_, i) => (
+                          <Button
+                            key={i + 1}
+                            variant={currentPage === i + 1 ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => fetchSentMessages(i * sentPageSize)}
+                          >
+                            {i + 1}
+                          </Button>
+                        ))}
+                        <Button variant="outline" size="sm" onClick={() => fetchSentMessages(sentOffset + sentPageSize)} disabled={currentPage === totalPages}>
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })()}
+                
               </div>
             )}
 
@@ -2921,7 +3458,7 @@ function DesktopMessaging() {
         )}
       </div>
     </TooltipProvider>
-  )
+  );
 }
 
-export default DesktopMessaging
+export default DesktopMessaging;

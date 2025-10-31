@@ -369,42 +369,7 @@ export function HelpDialog({ open, onOpenChange }: HelpDialogProps) {
         },
       ],
     },
-    {
-      id: "contact-support",
-      title: "Contact Support",
-      icon: Phone,
-      content: [
-        {
-          title: "Support Channels",
-          content: `• Phone: 1800 XXX XXX (1800 XXX XXX)
-• Email: support@exampl.com.au
-• Live Chat: Available 24/7 on our website
-• Support Portal: my.example.com.au`,
-        },
-        {
-          title: "Before Contacting Support",
-          content: `• Check the Status section for known issues
-• Try clearing your browser cache
-• Verify your internet connection
-• Note any error messages you're seeing`,
-        },
-        {
-          title: "Information to Provide",
-          content: `• Your account username
-• Description of the issue
-• Steps to reproduce the problem
-• Browser and operating system details
-• Any error messages received`,
-        },
-        {
-          title: "Support Hours",
-          content: `• Technical Support: 24/7
-• Account Support: Monday-Friday 8AM-6PM AEST
-• Emergency Support: Available 24/7
-• Response time: Within 4 hours for critical issues`,
-        },
-      ],
-    },
+    // Removed contact-support section
   ]
 
   const filteredSections = helpSections.filter(
@@ -446,39 +411,34 @@ export function HelpDialog({ open, onOpenChange }: HelpDialogProps) {
   ]
 
   const tooltipGuide = [
-    { number: 1, description: "Menu Options: The main items are displayed at the top left hand side of the screen" },
+    { description: "Menu Options: The main items are displayed at the top left hand side of the screen" },
     {
-      number: 2,
       description:
         "Quick contacts: Select from and manage Company Contacts, Company Groups, Personal Contacts and Personal Groups",
     },
-    { number: 10, description: "Add To Recipients Button: Adds selected contacts to the recipient list" },
+    { description: "Add To Recipients Button: Adds selected contacts to the recipient list" },
     {
-      number: 11,
       description:
         "To: Display all recipients of the message. Also use this field to enter recipients (mobile phone numbers) not included in any of the address books",
     },
-    { number: 12, description: "Compose Message: The message text is entered here" },
+    { description: "Compose Message: The message text is entered here" },
     {
-      number: 13,
       description:
         "Message Template: Instead of composing a new message from scratch, you can select a predefined template from the list of options",
     },
-    { number: 14, description: "From: Specify where replies to your SMS are to be sent. For example, company Inbox" },
-    { number: 15, description: "Credit remaining: Displays the number of message credits you have left for the month" },
+    { description: "From: Specify where replies to your SMS are to be sent. For example, company Inbox" },
+    { description: "Credit remaining: Displays the number of message credits you have left for the month" },
     {
-      number: 16,
       description:
         "Status: The Status link lists responses related to the actions you perform each time you use Desktop Messaging",
     },
-    { number: 17, description: "Characters Remaining: Displays number of characters remaining as you type" },
-    { number: 18, description: "Clear Button: Clear all message and recipient details and start again" },
+    { description: "Characters Remaining: Displays number of characters remaining as you type" },
+    { description: "Clear Button: Clear all message and recipient details and start again" },
     {
-      number: 19,
       description:
         "Send Later Button: Define the send schedule for the message (Note: the user account needs adequate permissions to use this feature)",
     },
-    { number: 20, description: "Send Now Button: Send the SMS message immediately" },
+    { description: "Send Now Button: Send the SMS message immediately" },
   ]
 
   return (
@@ -564,10 +524,10 @@ export function HelpDialog({ open, onOpenChange }: HelpDialogProps) {
                           number means:
                         </p>
                         <div className="grid grid-cols-1 gap-3">
-                          {tooltipGuide.map((tooltip) => (
-                            <div key={tooltip.number} className="flex items-start gap-3 p-2 border rounded">
+                          {tooltipGuide.map((tooltip, index) => (
+                            <div key={index} className="flex items-start gap-3 p-2 border rounded">
                               <div className="w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0">
-                                {tooltip.number}
+                                {index + 1}
                               </div>
                               <p className="text-sm">{tooltip.description}</p>
                             </div>

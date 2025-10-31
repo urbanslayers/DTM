@@ -39,9 +39,10 @@ class ReportsService {
       headers: {
         ...(telstraAPI as any).getAuthHeaders?.() || {},
       },
-    });
+    }
+  )
     return response.json();
   }
 }
 
-export const reportsService = new ReportsService(); 
+export const reportsService = new ReportsService();

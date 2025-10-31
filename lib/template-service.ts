@@ -39,6 +39,7 @@ class TemplateService {
           name,
           content,
           category,
+          userId: user.id,
         }),
       });
 

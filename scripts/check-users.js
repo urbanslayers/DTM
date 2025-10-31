@@ -1,4 +1,4 @@
-const { autoDb } = require("./lib/database-init.js");
+const { autoDb } = require("../lib/database-init.js");
 
 async function checkAndCreateDemoUsers() {
   try {

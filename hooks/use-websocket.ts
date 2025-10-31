@@ -37,7 +37,10 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     if (socket?.connected) return
 
     try {
-      const newSocket = io({
+      // If in browser, connect explicitly to the current origin. This avoids
+      // ambiguous host resolution in some dev setups (e.g. when using a custom server).
+      const host = typeof window !== 'undefined' ? window.location.origin : undefined
+      const newSocket = io(host || undefined, {
         path: "/socket.io",
         reconnection,
         reconnectionAttempts,

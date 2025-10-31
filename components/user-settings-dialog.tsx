@@ -42,11 +42,6 @@ export function UserSettingsDialog({ open, onOpenChange, onUserUpdate }: UserSet
     displayName: "",
     timezone: "Australia/Sydney",
     language: "en",
-    notifications: {
-      email: true,
-      sms: false,
-      push: true
-    }
   })
 
   useEffect(() => {
@@ -65,11 +60,6 @@ export function UserSettingsDialog({ open, onOpenChange, onUserUpdate }: UserSet
         displayName: user.displayName || user.username,
         timezone: user.timezone || "Australia/Sydney",
         language: user.language || "en",
-        notifications: user.notifications || {
-          email: true,
-          sms: false,
-          push: true
-        }
       })
     }
   }
@@ -91,7 +81,6 @@ export function UserSettingsDialog({ open, onOpenChange, onUserUpdate }: UserSet
           displayName: formData.displayName,
           timezone: formData.timezone,
           language: formData.language,
-          notifications: formData.notifications
         })
         
         if (success) {
@@ -133,7 +122,7 @@ export function UserSettingsDialog({ open, onOpenChange, onUserUpdate }: UserSet
         </DialogHeader>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="profile" className="flex items-center gap-2">
               <User className="w-4 h-4" />
               Profile
@@ -141,10 +130,6 @@ export function UserSettingsDialog({ open, onOpenChange, onUserUpdate }: UserSet
             <TabsTrigger value="messaging" className="flex items-center gap-2">
               <Smartphone className="w-4 h-4" />
               Messaging
-            </TabsTrigger>
-            <TabsTrigger value="preferences" className="flex items-center gap-2">
-              <Bell className="w-4 h-4" />
-              Preferences
             </TabsTrigger>
           </TabsList>
 
@@ -241,84 +226,6 @@ export function UserSettingsDialog({ open, onOpenChange, onUserUpdate }: UserSet
                       <SelectItem value="Australia/Adelaide">Australia/Adelaide</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="preferences" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Bell className="w-4 h-4" />
-                  Notification Preferences
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Mail className="w-4 h-4" />
-                      <span>Email Notifications</span>
-                    </div>
-                    <Select 
-                      value={formData.notifications.email ? "enabled" : "disabled"}
-                      onValueChange={(value) => setFormData({
-                        ...formData,
-                        notifications: { ...formData.notifications, email: value === "enabled" }
-                      })}
-                    >
-                      <SelectTrigger className="w-24">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="enabled">Enabled</SelectItem>
-                        <SelectItem value="disabled">Disabled</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Phone className="w-4 h-4" />
-                      <span>SMS Notifications</span>
-                    </div>
-                    <Select 
-                      value={formData.notifications.sms ? "enabled" : "disabled"}
-                      onValueChange={(value) => setFormData({
-                        ...formData,
-                        notifications: { ...formData.notifications, sms: value === "enabled" }
-                      })}
-                    >
-                      <SelectTrigger className="w-24">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="enabled">Enabled</SelectItem>
-                        <SelectItem value="disabled">Disabled</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Bell className="w-4 h-4" />
-                      <span>Push Notifications</span>
-                    </div>
-                    <Select 
-                      value={formData.notifications.push ? "enabled" : "disabled"}
-                      onValueChange={(value) => setFormData({
-                        ...formData,
-                        notifications: { ...formData.notifications, push: value === "enabled" }
-                      })}
-                    >
-                      <SelectTrigger className="w-24">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="enabled">Enabled</SelectItem>
-                        <SelectItem value="disabled">Disabled</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
                 </div>
               </CardContent>
             </Card>

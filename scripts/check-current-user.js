@@ -1,4 +1,4 @@
-const { authService } = require('./lib/auth');
+const { authService } = require('../lib/auth');
 
 async function checkCurrentUser() {
   console.log('Checking current user from auth service...');

@@ -25,14 +25,27 @@ export async function ensureDatabaseInitialized() {
 // Create a simple wrapper that ensures initialization
 export const autoDb = new Proxy(db, {
   get(target: any, prop: string | symbol) {
-    const value = target[prop]
-    if (typeof value === 'function' && prop !== 'initialize') {
-      // Ensure database is initialized before calling methods
-      return async (...args: any[]) => {
-        await ensureDatabaseInitialized()
+    // Always return a function wrapper for callable methods (except initialize)
+    if (prop === 'initialize') {
+      return target.initialize.bind(target)
+    }
+
+    return async (...args: any[]) => {
+      // Ensure DB is initialized first
+      await ensureDatabaseInitialized()
+
+      const value = target[prop]
+      if (typeof value === 'function') {
         return value.apply(target, args)
       }
+
+      // If the property is not a function, return it directly (for getters)
+      if (args.length === 0) {
+        return value
+      }
+
+      // If callers tried to call a non-existent method, surface a clearer error
+      throw new TypeError(`Database method '${String(prop)}' is not available`)
     }
-    return value
   }
 })

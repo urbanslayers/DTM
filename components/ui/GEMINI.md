@@ -1,1 +1,0 @@
-This directory contains generic, reusable UI components for the application, built using shadcn/ui. These components are used to build the application's user interface and maintain a consistent look and feel.

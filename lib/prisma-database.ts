@@ -49,13 +49,49 @@ const globalForPrisma = globalThis as unknown as {
 }
 
 const prisma = globalForPrisma.prisma ?? new PrismaClient({
-  log: ['query', 'error', 'warn'],
+  log: ['error', 'warn'], //['query']
 })
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
 
 export class PrismaDatabase {
   private prisma = prisma
+
+  // Helper: safely parse stored recipient arrays/strings
+  private parseRecipients(val: any): string[] {
+    if (!val) return []
+    if (Array.isArray(val)) return val.map(String)
+    if (typeof val === 'string') {
+      const s = val.trim()
+      if (s === '') return []
+      if (s.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(s)
+          return Array.isArray(parsed) ? parsed.map(String) : [String(parsed)]
+        } catch (e) {
+          // legacy: stored as plain string that happens to start with [ or malformed JSON
+          return [s]
+        }
+      }
+      return [s]
+    }
+    try {
+      return [String(val)]
+    } catch (e) {
+      return []
+    }
+  }
+
+  // Helper: safely parse JSON strings into objects with fallback
+  private parseJSONSafe<T = any>(val: any, fallback: T): T {
+    if (val === null || val === undefined) return fallback
+    if (typeof val !== 'string') return val as T
+    try {
+      return JSON.parse(val) as T
+    } catch (e) {
+      return fallback
+    }
+  }
 
   async initialize() {
     try {
@@ -364,7 +400,7 @@ export class PrismaDatabase {
     return messages.map((msg: any) => ({
       id: msg.id,
       userId: msg.userId,
-      to: Array.isArray(msg.to) ? msg.to : JSON.parse(msg.to || '[]'),
+      to: this.parseRecipients(msg.to),
       from: msg.from || undefined,
       content: msg.content,
       type: msg.type as "sms" | "mms",
@@ -410,7 +446,7 @@ export class PrismaDatabase {
     return {
       id: message.id,
       userId: message.userId,
-      to: Array.isArray(message.to) ? message.to : JSON.parse(message.to || '[]'),
+      to: this.parseRecipients(message.to),
       from: message.from || undefined,
       content: message.content,
       type: message.type as "sms" | "mms",
@@ -449,6 +485,23 @@ export class PrismaDatabase {
   async getContactsByUserId(userId: string): Promise<Contact[]> {
     const contacts = await this.prisma.contact.findMany({
       where: { userId },
+      orderBy: { createdAt: 'desc' }
+    })
+
+    return contacts.map((contact: any) => ({
+      id: contact.id,
+      userId: contact.userId,
+      name: contact.name,
+      phoneNumber: contact.phoneNumber,
+      email: contact.email || undefined,
+      category: contact.category as "company" | "personal",
+      createdAt: contact.createdAt,
+    })) as Contact[]
+  }
+
+  // Return all contacts across all users (admin use)
+  async getAllContacts(): Promise<Contact[]> {
+    const contacts = await this.prisma.contact.findMany({
       orderBy: { createdAt: 'desc' }
     })
 
@@ -585,7 +638,7 @@ export class PrismaDatabase {
     return messages.map((msg: any) => ({
       id: msg.id,
       userId: msg.userId,
-      to: Array.isArray(msg.to) ? msg.to : JSON.parse(msg.to || '[]'),
+      to: this.parseRecipients(msg.to),
       from: msg.from || undefined,
       content: msg.content,
       type: msg.type as "sms" | "mms",
@@ -623,6 +676,14 @@ export class PrismaDatabase {
   async markMessageAsRead(messageId: string): Promise<boolean> {
     await this.prisma.inboxMessage.update({
       where: { id: messageId },
+      data: { read: true }
+    })
+    return true
+  }
+
+  async markAllInboxMessagesAsRead(userId: string): Promise<boolean> {
+    await this.prisma.inboxMessage.updateMany({
+      where: { userId },
       data: { read: true }
     })
     return true
@@ -750,8 +811,8 @@ export class PrismaDatabase {
       id: rule.id,
       userId: rule.userId,
       name: rule.name,
-      condition: JSON.parse(rule.condition),
-      action: JSON.parse(rule.action),
+      condition: this.parseJSONSafe(rule.condition, {}),
+      action: this.parseJSONSafe(rule.action, {}),
       enabled: rule.enabled,
       createdAt: rule.createdAt,
     })) as Rule[]
@@ -782,8 +843,8 @@ export class PrismaDatabase {
       id: rule.id,
       userId: rule.userId,
       name: rule.name,
-      condition: JSON.parse(rule.condition),
-      action: JSON.parse(rule.action),
+      condition: this.parseJSONSafe(rule.condition, {}),
+      action: this.parseJSONSafe(rule.action, {}),
       enabled: rule.enabled,
       createdAt: rule.createdAt,
     } as Rule
@@ -806,8 +867,8 @@ export class PrismaDatabase {
       id: rule.id,
       userId: rule.userId,
       name: rule.name,
-      condition: JSON.parse(rule.condition),
-      action: JSON.parse(rule.action),
+      condition: this.parseJSONSafe(rule.condition, {}),
+      action: this.parseJSONSafe(rule.action, {}),
       enabled: rule.enabled,
       createdAt: rule.createdAt,
     })) as Rule[]
@@ -828,8 +889,8 @@ export class PrismaDatabase {
       id: newRule.id,
       userId: newRule.userId,
       name: newRule.name,
-      condition: JSON.parse(newRule.condition),
-      action: JSON.parse(newRule.action),
+      condition: this.parseJSONSafe(newRule.condition, {}),
+      action: this.parseJSONSafe(newRule.action, {}),
       enabled: newRule.enabled,
       createdAt: newRule.createdAt,
     } as Rule
@@ -882,6 +943,26 @@ export class PrismaDatabase {
       category: template.category as "personal" | "company",
       createdAt: template.createdAt,
     })) as MessageTemplate[]
+  }
+
+  async addTemplate(template: Omit<MessageTemplate, "id" | "createdAt">): Promise<MessageTemplate> {
+    const newTpl = await this.prisma.messageTemplate.create({
+      data: {
+        userId: template.userId,
+        name: template.name,
+        content: template.content,
+        category: template.category,
+      }
+    })
+
+    return {
+      id: newTpl.id,
+      userId: newTpl.userId,
+      name: newTpl.name,
+      content: newTpl.content,
+      category: newTpl.category as "personal" | "company",
+      createdAt: newTpl.createdAt,
+    } as MessageTemplate
   }
 
   async updateMessage(messageId: string, updates: Partial<Message>): Promise<Message | null> {

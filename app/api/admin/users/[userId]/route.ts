@@ -43,7 +43,7 @@ export async function PUT(request: NextRequest, { params }: { params: { userId: 
 
     const { userId } = params
     const body = await request.json()
-    const { username, email, role, credits, isActive } = body
+    const { username, email, role, credits, isActive, personalMobile, displayName, timezone, language } = body
 
     const updatedUser = await db.updateUser(userId, {
       username,
@@ -51,6 +51,10 @@ export async function PUT(request: NextRequest, { params }: { params: { userId: 
       role,
       credits,
       isActive,
+      personalMobile,
+      displayName,
+      timezone,
+      language,
     })
 
     if (!updatedUser) {

@@ -40,6 +40,7 @@ class RulesService {
           condition,
           action,
           enabled: true,
+          userId: user.id,
         }),
       });
 

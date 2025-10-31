@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Plus, Settings, Trash2, Edit } from "lucide-react"
 import type { Rule } from "@/lib/types"
+import { rulesService } from "@/lib/rules-service"
 
 interface RulesWizardDialogProps {
   open: boolean
@@ -22,26 +23,7 @@ interface RulesWizardDialogProps {
 }
 
 export function RulesWizardDialog({ open, onOpenChange, rules: externalRules, editingRuleId, onRuleUpdate }: RulesWizardDialogProps) {
-  const [rules, setRules] = useState<Rule[]>(externalRules || [
-    {
-      id: "1",
-      userId: "demo-user",
-      name: "Auto Reply - Business Hours",
-      condition: { type: "keyword", value: "urgent" },
-      action: { type: "reply", value: "Thank you for your message. We'll respond during business hours (9 AM - 5 PM)." },
-      enabled: true,
-      createdAt: new Date(),
-    },
-    {
-      id: "2",
-      userId: "demo-user",
-      name: "Forward Support Messages",
-      condition: { type: "contains", value: "support" },
-      action: { type: "forward", value: "support@company.com" },
-      enabled: true,
-      createdAt: new Date(),
-    },
-  ])
+  const [rules, setRules] = useState<Rule[]>(externalRules || [])
   useEffect(() => {
     if (!open) {
       // Reset editing state when dialog closes
@@ -52,7 +34,7 @@ export function RulesWizardDialog({ open, onOpenChange, rules: externalRules, ed
   }, [open])
 
   useEffect(() => {
-    if (externalRules) {
+    if (externalRules !== undefined) {
       setRules(externalRules)
     }
   }, [externalRules])
@@ -86,54 +68,60 @@ export function RulesWizardDialog({ open, onOpenChange, rules: externalRules, ed
     isActive: true,
   })
 
-  const handleAddRule = () => {
+  const handleAddRule = async () => {
     if (!formData.name.trim() || !formData.conditionValue.trim()) {
       alert("Please enter rule name and condition")
       return
     }
 
-    if (editingRule) {
-      // Update existing rule
-      const updatedRule: Rule = {
-        ...editingRule,
-        name: formData.name,
-        condition: {
-          type: formData.conditionType,
-          value: formData.conditionValue,
-        },
-        action: {
-          type: formData.actionType,
-          value: formData.actionValue,
-        },
-        enabled: formData.isActive,
+    try {
+      if (editingRule) {
+        // Update existing rule via API
+        const updatedRule = await rulesService.updateRule(editingRule.id, {
+          name: formData.name,
+          condition: {
+            type: formData.conditionType,
+            value: formData.conditionValue,
+          },
+          action: {
+            type: formData.actionType,
+            value: formData.actionValue,
+          },
+          enabled: formData.isActive,
+        })
+
+        if (updatedRule) {
+          // Update local state
+          setRules((prev) => prev.map((rule) => (rule.id === editingRule.id ? updatedRule : rule)))
+        }
+      } else {
+        // Create new rule via API
+        const newRule = await rulesService.addRule(
+          formData.name,
+          {
+            type: formData.conditionType,
+            value: formData.conditionValue,
+          },
+          {
+            type: formData.actionType,
+            value: formData.actionValue,
+          }
+        )
+
+        if (newRule) {
+          // Update local state
+          setRules((prev) => [...prev, newRule])
+        }
       }
 
-      setRules((prev) => prev.map((rule) => (rule.id === editingRule.id ? updatedRule : rule)))
-    } else {
-      // Create new rule
-      const newRule: Rule = {
-        id: Date.now().toString(),
-        userId: "demo-user", // This would come from current user in real app
-        name: formData.name,
-        condition: {
-          type: formData.conditionType,
-          value: formData.conditionValue,
-        },
-        action: {
-          type: formData.actionType,
-          value: formData.actionValue,
-        },
-        enabled: formData.isActive,
-        createdAt: new Date(),
+      resetForm()
+      setShowAddForm(false)
+      if (onRuleUpdate) {
+        onRuleUpdate()
       }
-
-      setRules((prev) => [...prev, newRule])
-    }
-
-    resetForm()
-    setShowAddForm(false)
-    if (onRuleUpdate) {
-      onRuleUpdate()
+    } catch (error) {
+      console.error("Error saving rule:", error)
+      alert("Failed to save rule. Please try again.")
     }
   }
 
@@ -149,14 +137,38 @@ export function RulesWizardDialog({ open, onOpenChange, rules: externalRules, ed
     setEditingRule(null)
   }
 
-  const toggleRule = (ruleId: string) => {
+  const toggleRule = async (ruleId: string) => {
     console.log('Toggling rule:', ruleId)
-    setRules((prev) => prev.map((rule) => (rule.id === ruleId ? { ...rule, enabled: !rule.enabled } : rule)))
+    try {
+      const success = await rulesService.toggleRule(ruleId)
+      if (success) {
+        // Update local state to reflect the change
+        setRules((prev) => prev.map((rule) => (rule.id === ruleId ? { ...rule, enabled: !rule.enabled } : rule)))
+        if (onRuleUpdate) {
+          onRuleUpdate()
+        }
+      }
+    } catch (error) {
+      console.error("Error toggling rule:", error)
+      alert("Failed to toggle rule. Please try again.")
+    }
   }
 
-  const deleteRule = (ruleId: string) => {
+  const deleteRule = async (ruleId: string) => {
     console.log('Deleting rule:', ruleId)
-    setRules((prev) => prev.filter((rule) => rule.id !== ruleId))
+    try {
+      const success = await rulesService.deleteRule(ruleId)
+      if (success) {
+        // Update local state
+        setRules((prev) => prev.filter((rule) => rule.id !== ruleId))
+        if (onRuleUpdate) {
+          onRuleUpdate()
+        }
+      }
+    } catch (error) {
+      console.error("Error deleting rule:", error)
+      alert("Failed to delete rule. Please try again.")
+    }
   }
 
   const getConditionText = (rule: Rule) => {
@@ -330,7 +342,7 @@ export function RulesWizardDialog({ open, onOpenChange, rules: externalRules, ed
                           </Badge>
                         </div>
                         <div className="flex items-center gap-1">
-                          <Switch checked={rule.enabled} onCheckedChange={() => toggleRule(rule.id)} />
+                          <Switch checked={rule.enabled} onCheckedChange={(checked) => toggleRule(rule.id)} />
                           <Button
                             variant="outline"
                             size="sm"

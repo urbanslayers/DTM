@@ -9,8 +9,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { UserPlus, Search, Edit, Trash2, Users, User } from "lucide-react"
+import { UserPlus, Search, Edit, Trash2, Users, User, Lock } from "lucide-react"
 import { contactService } from "@/lib/contact-service"
+import { authService } from "@/lib/auth"
 import type { Contact } from "@/lib/types"
 
 interface ContactsDialogProps {
@@ -21,10 +22,14 @@ interface ContactsDialogProps {
 
 export function ContactsDialog({ open, onOpenChange, editingContact: externalEditingContact }: ContactsDialogProps) {
   const [contacts, setContacts] = useState<Contact[]>([])
+  const [groups, setGroups] = useState<{ id: string; name: string; type: "company" | "personal"; memberIds: string[] }[]>([])
   const [searchQuery, setSearchQuery] = useState("")
   const [showAddForm, setShowAddForm] = useState(false)
+  const [currentUser, setCurrentUser] = useState<any>(() => authService.getCurrentUser())
   const [editingContact, setEditingContact] = useState<Contact | null>(null)
   const [activeTab, setActiveTab] = useState("all")
+  const [showAddGroupForm, setShowAddGroupForm] = useState(false)
+  const [groupForm, setGroupForm] = useState<{ id?: string; name: string; type: "personal" | "company"; memberIds: string[] }>({ id: undefined, name: "", type: "personal", memberIds: [] })
 
   // Form state
   const [formData, setFormData] = useState({
@@ -48,7 +53,10 @@ export function ContactsDialog({ open, onOpenChange, editingContact: externalEdi
         setShowAddForm(true)
       } else {
         loadContacts()
+        loadGroups()
       }
+      // refresh currentUser when dialog opens
+      try { setCurrentUser(authService.getCurrentUser()) } catch(e) {}
     }
   }, [open, externalEditingContact])
 
@@ -64,6 +72,52 @@ export function ContactsDialog({ open, onOpenChange, editingContact: externalEdi
   const loadContacts = async () => {
     const contactsData = await contactService.getContacts()
     setContacts(contactsData)
+  }
+
+  const loadGroups = async () => {
+    const groupsData = await contactService.getGroups()
+    setGroups(groupsData || [])
+  }
+
+  const handleSaveGroup = async () => {
+    if (!groupForm.name.trim()) {
+      alert('Please enter a group name')
+      return
+    }
+
+    if (groupForm.id) {
+      // update
+      const updated = await contactService.updateGroup(groupForm.id, {
+        name: groupForm.name,
+        type: groupForm.type,
+        memberIds: groupForm.memberIds,
+      })
+      if (updated) {
+        await loadGroups()
+          // notify other components that groups changed
+          try { window.dispatchEvent(new CustomEvent('contactGroupsUpdated')) } catch(e) {}
+        setShowAddGroupForm(false)
+        setGroupForm({ id: undefined, name: "", type: "personal", memberIds: [] })
+      } else {
+        alert('Failed to update group')
+      }
+    } else {
+      // create
+      const created = await contactService.addGroup(groupForm.name, groupForm.type, groupForm.memberIds)
+      if (created) {
+        await loadGroups()
+          try { window.dispatchEvent(new CustomEvent('contactGroupsUpdated')) } catch(e) {}
+        setShowAddGroupForm(false)
+        setGroupForm({ id: undefined, name: "", type: "personal", memberIds: [] })
+      } else {
+        alert('Failed to create group')
+      }
+    }
+  }
+
+  const handleCancelGroup = () => {
+    setShowAddGroupForm(false)
+    setGroupForm({ id: undefined, name: "", type: "personal", memberIds: [] })
   }
 
   const handleAddContact = async () => {
@@ -172,10 +226,16 @@ export function ContactsDialog({ open, onOpenChange, editingContact: externalEdi
                 className="pl-10"
               />
             </div>
-            <Button onClick={() => setShowAddForm(true)} className="flex items-center gap-2">
-              <UserPlus className="w-4 h-4" />
-              Add Contact
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button onClick={() => { setShowAddForm(false); setShowAddGroupForm(false); setActiveTab('all'); setCurrentUser(authService.getCurrentUser()) }} className="flex items-center gap-2">
+                <UserPlus className="w-4 h-4" />
+                Edit Contacts
+              </Button>
+              <Button onClick={() => { setShowAddGroupForm(true); setGroupForm({ name: "", type: "personal", memberIds: [] }) }} className="flex items-center gap-2">
+                <Users className="w-4 h-4" />
+                Create Group
+              </Button>
+            </div>
           </div>
 
           {/* Add/Edit Contact Form */}
@@ -246,6 +306,73 @@ export function ContactsDialog({ open, onOpenChange, editingContact: externalEdi
             </div>
           )}
 
+          {/* Create/Edit Group Form */}
+          {showAddGroupForm && (
+            <div className="border rounded-lg p-4 bg-card">
+              <h3 className="font-medium mb-4">{groupForm.id ? "Edit Group" : "Create Group"}</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="group-name">Group Name *</Label>
+                  <Input
+                    id="group-name"
+                    value={groupForm.name}
+                    onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })}
+                    placeholder="Enter group name"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="group-type">Type</Label>
+                  <Select
+                    value={groupForm.type}
+                    onValueChange={(value) => setGroupForm({ ...groupForm, type: value as "personal" | "company" })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="personal">Personal</SelectItem>
+                      <SelectItem value="company">Company</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="text-sm font-medium mb-2">Members</div>
+                {/* Use ScrollArea to ensure the members list scrolls within the dialog */}
+                <ScrollArea className="border rounded p-2 max-h-48">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {contacts.length === 0 ? (
+                      <div className="text-gray-500">No contacts available</div>
+                    ) : (
+                      contacts.map((c) => (
+                        <label key={c.id} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={groupForm.memberIds.includes(c.id)}
+                            onChange={(e) => {
+                              const checked = e.target.checked
+                              setGroupForm((prev) => ({
+                                ...prev,
+                                memberIds: checked ? [...prev.memberIds, c.id] : prev.memberIds.filter(id => id !== c.id)
+                              }))
+                            }}
+                          />
+                          <span className="text-sm">{c.name} — {c.phoneNumber}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
+
+              <div className="flex gap-2 mt-4">
+                <Button onClick={handleSaveGroup}>{groupForm.id ? "Update Group" : "Create Group"}</Button>
+                <Button variant="outline" onClick={handleCancelGroup}>Cancel</Button>
+              </div>
+            </div>
+          )}
+
           {/* Contact Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="grid w-full grid-cols-3">
@@ -283,29 +410,44 @@ export function ContactsDialog({ open, onOpenChange, editingContact: externalEdi
                           <Badge variant={contact.category === "company" ? "default" : "secondary"}>
                             {contact.category}
                           </Badge>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setEditingContact(contact)
-                              setFormData({
-                                name: contact.name,
-                                phoneNumber: contact.phoneNumber,
-                                email: contact.email || "",
-                                category: contact.category,
-                              })
-                              setShowAddForm(true)
-                            }}
-                          >
-                            <Edit className="w-3 h-3" />
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleDeleteContact(contact.id, contact.name)}
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </Button>
+                          {(() => {
+                            const canEdit = currentUser?.role === 'admin' || contact.userId === currentUser?.id
+                            if (canEdit) {
+                              return (
+                                <>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                      setEditingContact(contact)
+                                      setFormData({
+                                        name: contact.name,
+                                        phoneNumber: contact.phoneNumber,
+                                        email: contact.email || "",
+                                        category: contact.category,
+                                      })
+                                      setShowAddForm(true)
+                                    }}
+                                  >
+                                    <Edit className="w-3 h-3" />
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleDeleteContact(contact.id, contact.name)}
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </Button>
+                                </>
+                              )
+                            }
+                            return (
+                              <div className="flex items-center gap-2 text-gray-400 text-sm">
+                                <Lock className="w-3 h-3" />
+                                <span>No permission</span>
+                              </div>
+                            )
+                          })()}
                         </div>
                       </div>
                     ))
@@ -314,6 +456,42 @@ export function ContactsDialog({ open, onOpenChange, editingContact: externalEdi
               </ScrollArea>
             </TabsContent>
           </Tabs>
+
+          {/* Groups Section */}
+          <div className="mt-4">
+            <div className="bg-gray-50 px-4 py-2 border-b border-gray-300 font-medium text-sm">Groups</div>
+            <div className="divide-y divide-gray-200 max-h-64 overflow-y-auto">
+              {groups.length === 0 ? (
+                <div className="p-4 text-gray-500">No groups yet. Use Create Group to add one.</div>
+              ) : (
+                groups.map((g) => (
+                  <div key={g.id} className="p-3 hover:bg-gray-50 flex items-center justify-between">
+                    <div>
+                      <div className="font-medium">{g.name}</div>
+                      <div className="text-sm text-gray-600">{g.memberIds.length} members</div>
+                    </div>
+                      <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={async () => {
+                        // Open edit group form
+                        setShowAddGroupForm(true)
+                        setGroupForm({ id: g.id, name: g.name, type: g.type, memberIds: g.memberIds })
+                      }}>
+                        Manage
+                      </Button>
+                      <Button variant="outline" size="sm" className="text-red-600" onClick={async () => {
+                        if (!confirm(`Delete group "${g.name}"?`)) return
+                        await contactService.deleteGroup(g.id)
+                        await loadGroups()
+                        try { window.dispatchEvent(new CustomEvent('contactGroupsUpdated')) } catch(e) {}
+                      }}>
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="flex justify-end pt-4 border-t">
@@ -323,3 +501,4 @@ export function ContactsDialog({ open, onOpenChange, editingContact: externalEdi
     </Dialog>
   )
 }
+

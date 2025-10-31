@@ -99,6 +99,11 @@ class Database {
     return this.db.getContactsByUserId(userId)
   }
 
+  // Return all contacts across all users (admin use)
+  getAllContacts(): Promise<Contact[]> {
+    return this.db.getAllContacts()
+  }
+
   getContactById(contactId: string): Promise<Contact | null> {
     return this.db.getContactById(contactId)
   }
@@ -125,6 +130,10 @@ class Database {
 
   deleteTemplate(templateId: string): Promise<boolean> {
     return this.db.deleteTemplate(templateId)
+  }
+
+  addTemplate(template: Omit<MessageTemplate, "id" | "createdAt">): Promise<MessageTemplate> {
+    return this.db.addTemplate(template)
   }
 
   getAllTemplates(): Promise<MessageTemplate[]> {
