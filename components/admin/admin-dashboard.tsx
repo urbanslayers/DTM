@@ -29,14 +29,20 @@ export function AdminDashboard() {
   const [reportsLoading, setReportsLoading] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [currentUser, setCurrentUser] = useState(authService.getCurrentUser())
+  const [selectedPeriod, setSelectedPeriod] = useState("7d")
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null)
 
   useEffect(() => {
     loadAnalytics()
-  }, [])
+    // Set up a refresh interval every minute
+    const interval = setInterval(loadAnalytics, 60000)
+    return () => clearInterval(interval)
+  }, [selectedPeriod]) // Reload when period changes
 
   const loadAnalytics = async () => {
     if (!currentUser) {
       setLoading(false)
+      setAnalyticsError("Not authenticated")
       return
     }
 
@@ -44,27 +50,37 @@ export function AdminDashboard() {
     if (currentUser.role !== 'admin') {
       console.error("Access denied: Admin privileges required")
       setLoading(false)
+      setAnalyticsError("Admin privileges required")
       return
     }
 
     try {
-      const response = await fetch("/api/admin/analytics?period=7d", {
+      setLoading(true)
+      setAnalyticsError(null)
+      
+      const response = await fetch(`/api/admin/analytics?period=${selectedPeriod}`, {
         headers: {
           Authorization: `Bearer user_${currentUser.id}`,
         },
       })
+      
       if (response.ok) {
         const data = await response.json()
         setAnalytics(data)
+        setAnalyticsError(null)
       } else if (response.status === 401) {
         console.error("Authentication failed for admin dashboard")
+        setAnalyticsError("Authentication failed")
         // Redirect to home or show login
         router.push("/")
       } else {
-        console.error("Failed to load analytics:", response.statusText)
+        const error = await response.text()
+        console.error("Failed to load analytics:", error)
+        setAnalyticsError(`Failed to load analytics: ${error}`)
       }
     } catch (error) {
       console.error("Failed to load analytics:", error)
+      setAnalyticsError(`Failed to load analytics: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setLoading(false)
     }
@@ -346,7 +362,13 @@ export function AdminDashboard() {
           </TabsContent>
 
           <TabsContent value="analytics">
-            <AnalyticsDashboard analytics={analytics} />
+            <AnalyticsDashboard 
+              analytics={analytics}
+              period={selectedPeriod}
+              onPeriodChange={setSelectedPeriod}
+              loading={loading}
+              error={analyticsError}
+            />
           </TabsContent>
 
           <TabsContent value="monitoring">

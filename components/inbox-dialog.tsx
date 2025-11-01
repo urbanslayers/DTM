@@ -166,14 +166,19 @@ export function InboxDialog({ open, onOpenChange }: InboxDialogProps) {
   }
 
   const filteredMessages = messages.filter((msg) => {
+    const q = searchQuery.trim().toLowerCase();
     const matchesSearch =
-      searchQuery === "" || msg.from.includes(searchQuery) || msg.body.toLowerCase().includes(searchQuery.toLowerCase())
+      q === "" ||
+      (msg.from && msg.from.toLowerCase().includes(q)) ||
+      (msg.to && msg.to.toLowerCase().includes(q)) ||
+      (msg.subject && msg.subject.toLowerCase().includes(q)) ||
+      (msg.body && msg.body.toLowerCase().includes(q));
 
     const matchesTab =
-      activeTab === "all" || (activeTab === "unread" && !msg.read) || (activeTab === "read" && msg.read)
+      activeTab === "all" || (activeTab === "unread" && !msg.read) || (activeTab === "read" && msg.read);
 
-    return matchesSearch && matchesTab
-  })
+    return matchesSearch && matchesTab;
+  });
 
   const unreadCount = messages.filter((msg) => !msg.read).length
 

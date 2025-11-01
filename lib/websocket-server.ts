@@ -31,14 +31,19 @@ class WebSocketManager {
   initialize(server: HTTPServer) {
     this.io = new SocketIOServer(server, {
       cors: {
-        origin: "*",
+        origin: process.env.NODE_ENV === 'production' ? false : "*",
         methods: ["GET", "POST"],
+        credentials: true
       },
       path: "/socket.io",
+      transports: ['websocket', 'polling'],
+      pingTimeout: 10000,
+      pingInterval: 5000,
     })
 
     this.setupEventHandlers()
     this.startMetricsCollection()
+    console.log('WebSocket server initialized')
   }
 
   // Alternative method to set Socket.IO instance directly (for custom server)
@@ -54,23 +59,58 @@ class WebSocketManager {
     this.io.on("connection", (socket) => {
       console.log("Client connected:", socket.id)
 
+      // Send initial state to admins
+      this.collectAndBroadcastMetrics()
+
       // Handle admin authentication
-      socket.on("admin:authenticate", (token: string) => {
-        console.log('Admin authentication attempt:', token)
-        // In a real app, verify the JWT token
-        if (token === "admin_token") {
+      socket.on("admin:authenticate", async (token: string) => {
+        try {
+          console.log('Admin authentication attempt')
+          
+          // Extract user ID from token format: user_<id>
+          const userId = token.startsWith('user_') ? token.substring(5) : null;
+          
+          if (!userId) {
+            console.log("Admin authentication failed: Invalid token format")
+            socket.emit('admin:auth:error', 'Invalid authentication token')
+            return
+          }
+
+          // Verify the user exists and is an admin
+          const user = await db.getUserById(userId)
+          
+          if (!user) {
+            console.log("Admin authentication failed: User not found")
+            socket.emit('admin:auth:error', 'User not found')
+            return
+          }
+
+          if (user.role !== 'admin') {
+            console.log("Admin authentication failed: Not an admin user")
+            socket.emit('admin:auth:error', 'Admin privileges required')
+            return
+          }
+
+          // Admin authenticated successfully
           socket.join("admins")
           this.connectedAdmins.add(socket.id)
 
           // Send recent alerts to newly connected admin
-          socket.emit("admin:alerts:history", this.getRecentAlerts())
+          const alerts = await this.getRecentAlerts()
+          socket.emit("admin:alerts:history", alerts)
 
           // Send current system metrics
-          socket.emit("admin:metrics:update", this.getCurrentMetrics())
+          const metrics = await this.getCurrentMetrics()
+          socket.emit("admin:metrics:update", metrics)
+
+          // Track admin activity
+          await db.trackUserActivity(userId)
 
           console.log("Admin authenticated:", socket.id)
-        } else {
-          console.log("Admin authentication failed for token:", token)
+          socket.emit('admin:auth:success')
+        } catch (error) {
+          console.error("Error during admin authentication:", error)
+          socket.emit('admin:auth:error', 'Authentication failed')
         }
       })
 
@@ -117,34 +157,106 @@ class WebSocketManager {
   }
 
   private startMetricsCollection() {
-    // Collect and broadcast metrics every 30 seconds
-    this.metricsInterval = setInterval(async () => {
-      try {
-        const metrics = await this.getCurrentMetrics()
-        this.broadcastToAdmins("admin:metrics:update", metrics)
-      } catch (error) {
-        console.error("Error collecting metrics:", error)
-      }
-    }, 30000)
+    // Stop any existing collection
+    if (this.metricsInterval) {
+      clearInterval(this.metricsInterval)
+    }
+
+    // Collect initial metrics immediately
+    this.collectAndBroadcastMetrics()
+
+    // Then start regular collection every 5 seconds
+    this.metricsInterval = setInterval(() => {
+      this.collectAndBroadcastMetrics()
+    }, 5000)
+  }
+
+  private async collectAndBroadcastMetrics() {
+    if (this.connectedAdmins.size === 0) {
+      return // Don't collect metrics if no admins are connected
+    }
+
+    try {
+      console.log('Collecting metrics...')
+      const metrics = await this.getCurrentMetrics()
+      console.log('Broadcasting metrics to admins:', metrics)
+      this.broadcastToAdmins("admin:metrics:update", metrics)
+    } catch (error) {
+      console.error("Error collecting metrics:", error)
+      this.broadcastAlert({
+        type: "error",
+        title: "Metrics Collection Error",
+        message: error instanceof Error ? error.message : "Failed to collect system metrics",
+      })
+    }
   }
 
   private async getCurrentMetrics(): Promise<SystemMetrics> {
     const now = new Date()
     const oneMinuteAgo = new Date(now.getTime() - 60000)
+    const fiveMinutesAgo = new Date(now.getTime() - 300000)
 
-    // Get recent activity from database
-    const recentMessages = await db.getRecentMessages(oneMinuteAgo)
-    const recentAPICalls = await db.getRecentAPICalls(oneMinuteAgo)
-    const activeUsers = await db.getActiveUsersCount()
+    try {
+      // Get recent activity from database with error handling
+      const [
+        recentMessages,
+        recentAPICalls,
+        activeUsers,
+        dbState
+      ] = await Promise.all([
+        db.getRecentMessages(oneMinuteAgo).catch(err => {
+          console.error('Failed to get recent messages:', err);
+          return [];
+        }),
+        db.getRecentAPICalls(oneMinuteAgo).catch(err => {
+          console.error('Failed to get recent API calls:', err);
+          return [];
+        }),
+        db.getActiveUsersCount().catch(err => {
+          console.error('Failed to get active users count:', err);
+          return 0;
+        }),
+        db.getDatabaseState().catch(err => {
+          console.error('Failed to get database state:', err);
+          return null;
+        })
+      ]);
 
-    return {
-      timestamp: now,
-      activeUsers,
-      messagesPerMinute: recentMessages.length,
-      apiCallsPerMinute: recentAPICalls.length,
-      errorRate: this.calculateErrorRate(recentAPICalls),
-      avgResponseTime: this.calculateAvgResponseTime(recentAPICalls),
-      systemLoad: Math.random() * 100, // Mock system load
+      // Calculate real system load based on DB connections and query times
+      // Calculate system load based on API usage and active sessions
+      const systemLoad = dbState ? 
+        ((dbState.active_sessions / 100) * 100) + ((recentAPICalls.length / 100) * 20) :
+        ((recentAPICalls.length / 100) * 100); // Fallback based on API load
+
+      // Calculate error rate from the last 5 minutes of API calls for better sample size
+      const extendedAPICalls = await db.getRecentAPICalls(fiveMinutesAgo).catch(() => []);
+      
+      const metrics = {
+        timestamp: now,
+        activeUsers,
+        messagesPerMinute: recentMessages.length,
+        apiCallsPerMinute: recentAPICalls.length,
+        errorRate: this.calculateErrorRate(extendedAPICalls),
+        avgResponseTime: this.calculateAvgResponseTime(recentAPICalls),
+        systemLoad: Math.min(systemLoad, 100) // Cap at 100%
+      };
+
+      // Log metrics for debugging
+      console.debug('Current system metrics:', metrics);
+      
+      return metrics;
+    } catch (error) {
+      console.error('Error collecting system metrics:', error);
+      // Return zeroed metrics rather than throwing
+      return {
+        timestamp: now,
+        activeUsers: 0,
+        messagesPerMinute: 0,
+        apiCallsPerMinute: 0,
+        errorRate: 0,
+        avgResponseTime: 0,
+        systemLoad: 0
+      };
     }
   }
 

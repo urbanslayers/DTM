@@ -69,7 +69,7 @@ export function SendMMSDialog({ open, onOpenChange, onSend }: SendMMSDialogProps
 
     const recipientList = recipients
       .split(/[;,\n]/)
-      .map((r) => r.trim())
+  .map((r: string) => r.trim())
       .filter((r) => r.length > 0)
 
     onSend({

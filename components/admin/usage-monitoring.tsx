@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Search, Download, Filter, Activity, Clock, AlertCircle } from "lucide-react"
+import { authService } from "@/lib/auth"
 
 export function UsageMonitoring() {
   const [usageData, setUsageData] = useState<any>(null)
@@ -32,9 +33,18 @@ export function UsageMonitoring() {
         params.append("startDate", startDate)
       }
 
+      const currentUser = authService.getCurrentUser()
+      if (!currentUser) {
+        throw new Error("Not authenticated")
+      }
+
+      if (currentUser.role !== 'admin') {
+        throw new Error("Admin privileges required")
+      }
+
       const response = await fetch(`/api/admin/usage?${params}`, {
         headers: {
-          Authorization: "Bearer admin_token",
+          Authorization: `Bearer user_${currentUser.id}`,
         },
       })
 

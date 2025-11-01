@@ -907,26 +907,212 @@ export class PrismaDatabase {
   }
 
   async getAnalytics(period: string): Promise<Analytics> {
-    // For now, return a simple default structure
-    // TODO: Implement proper analytics queries when needed
-    return {
-      overview: {
-        totalMessages: 0,
-        smsCount: 0,
-        mmsCount: 0,
-        deliveredCount: 0,
-        failedCount: 0,
-        deliveryRate: 0,
-        activeUsers: 0,
-        newUsers: 0,
-        totalAPICalls: 0,
-        avgResponseTime: 0,
-        errorRate: 0,
-      },
-      dailyStats: [],
-      topEndpoints: [],
-      topUsers: [],
+    try {
+      // Calculate start date based on period
+      const now = new Date()
+      let startDate = new Date()
+      switch (period) {
+        case '1d':
+          startDate.setDate(startDate.getDate() - 1)
+          break
+        case '7d':
+          startDate.setDate(startDate.getDate() - 7)
+          break
+        case '30d':
+          startDate.setDate(startDate.getDate() - 30)
+          break
+        case '90d':
+          startDate.setDate(startDate.getDate() - 90)
+          break
+        default:
+          startDate.setDate(startDate.getDate() - 7) // Default to 7 days
+      }
+
+      // Get messages for the period
+      const messages = await this.prisma.message.findMany({
+        where: {
+          createdAt: {
+            gte: startDate,
+            lte: now
+          }
+        }
+      })
+
+      // Get API calls for the period
+      const apiCalls = await this.prisma.apiUsage.findMany({
+        where: {
+          timestamp: {
+            gte: startDate,
+            lte: now
+          }
+        }
+      })
+
+      // Get active and new users
+      const activeUsers = await this.prisma.activeSession.count()
+      const newUsers = await this.prisma.user.count({
+        where: {
+          createdAt: {
+            gte: startDate,
+            lte: now
+          }
+        }
+      })
+
+      // Calculate message stats
+      const totalMessages = messages.length
+      const smsCount = messages.filter(m => m.type === 'sms').length
+      const mmsCount = messages.filter(m => m.type === 'mms').length
+      const deliveredCount = messages.filter(m => m.status === 'delivered').length
+      const failedCount = messages.filter(m => m.status === 'failed').length
+      const deliveryRate = totalMessages > 0 ? (deliveredCount / totalMessages) * 100 : 0
+
+      // Calculate API stats
+      const totalAPICalls = apiCalls.length
+      const avgResponseTime = apiCalls.length > 0
+        ? apiCalls.reduce((sum, call) => sum + call.responseTime, 0) / apiCalls.length
+        : 0
+      const errorCount = apiCalls.filter(call => call.statusCode >= 400).length
+      const errorRate = totalAPICalls > 0 ? (errorCount / totalAPICalls) * 100 : 0
+
+      // Calculate daily stats
+      const dailyStats = await this.getDailyStats(startDate, now)
+
+      // Get top endpoints
+      const topEndpoints = await this.getTopEndpoints(startDate, now)
+
+      // Get top users
+      const topUsers = await this.getTopMessageUsers(startDate, now)
+
+      return {
+        overview: {
+          totalMessages,
+          smsCount,
+          mmsCount,
+          deliveredCount,
+          failedCount,
+          deliveryRate,
+          activeUsers,
+          newUsers,
+          totalAPICalls,
+          avgResponseTime,
+          errorRate,
+        },
+        dailyStats,
+        topEndpoints,
+        topUsers,
+      }
+    } catch (error) {
+      console.error('Error getting analytics:', error)
+      throw error
     }
+  }
+
+  private async getDailyStats(startDate: Date, endDate: Date) {
+    const days = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24))
+    const stats = []
+
+    for (let i = 0; i < days; i++) {
+      const day = new Date(startDate)
+      day.setDate(day.getDate() + i)
+      const nextDay = new Date(day)
+      nextDay.setDate(nextDay.getDate() + 1)
+
+      // Get messages for this day
+      const messages = await this.prisma.message.count({
+        where: {
+          createdAt: {
+            gte: day,
+            lt: nextDay
+          }
+        }
+      })
+
+      // Get API calls for this day
+      const apiCalls = await this.prisma.apiUsage.findMany({
+        where: {
+          timestamp: {
+            gte: day,
+            lt: nextDay
+          }
+        }
+      })
+
+      const errors = apiCalls.filter(call => call.statusCode >= 400).length
+
+      stats.push({
+        date: day.toISOString().split('T')[0],
+        messages,
+        apiCalls: apiCalls.length,
+        errors
+      })
+    }
+
+    return stats
+  }
+
+  private async getTopEndpoints(startDate: Date, endDate: Date) {
+    const apiCalls = await this.prisma.apiUsage.groupBy({
+      by: ['endpoint'],
+      where: {
+        timestamp: {
+          gte: startDate,
+          lte: endDate
+        }
+      },
+      _count: {
+        endpoint: true
+      },
+      orderBy: {
+        _count: {
+          endpoint: 'desc'
+        }
+      },
+      take: 5
+    })
+
+    return apiCalls.map(call => ({
+      endpoint: call.endpoint,
+      count: call._count.endpoint
+    }))
+  }
+
+  private async getTopMessageUsers(startDate: Date, endDate: Date) {
+    // Get message counts per user
+    const messageCounts = await this.prisma.message.groupBy({
+      by: ['userId'],
+      where: {
+        createdAt: {
+          gte: startDate,
+          lte: endDate
+        }
+      },
+      _count: true,
+      orderBy: {
+        _count: {
+          userId: 'desc'
+        }
+      },
+      take: 5
+    })
+
+    const userIds = messageCounts.map(stat => stat.userId)
+    const users = await this.prisma.user.findMany({
+      where: {
+        id: {
+          in: userIds
+        }
+      }
+    })
+
+    return messageCounts.map(stat => {
+      const user = users.find(u => u.id === stat.userId)
+      return {
+        userId: stat.userId,
+        username: user?.username || 'Unknown User',
+        messageCount: stat._count || 0
+      }
+    })
   }
 
   async getTemplatesByUserId(userId: string): Promise<MessageTemplate[]> {

@@ -39,10 +39,11 @@ export function ScheduledMessagesDialog({ open, onOpenChange, selectedMessage: e
   }
 
   const filteredMessages = messages.filter((message) => {
+    const q = searchQuery.trim().toLowerCase();
     return (
-      searchQuery === "" ||
-      message.to.some((recipient) => recipient.includes(searchQuery)) ||
-      message.content.toLowerCase().includes(searchQuery.toLowerCase())
+      q === "" ||
+      (Array.isArray(message.to) && message.to.some((recipient) => recipient.toLowerCase().includes(q))) ||
+      (message.content && message.content.toLowerCase().includes(q))
     )
   })
 

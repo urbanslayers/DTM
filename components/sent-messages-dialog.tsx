@@ -109,10 +109,12 @@ export function SentMessagesDialog({ open, onOpenChange }: SentMessagesDialogPro
   };
 
   const filteredMessages = sentApiMessages.filter((message) => {
+    const q = searchQuery.trim().toLowerCase();
     const matchesSearch =
-      searchQuery === "" ||
-      (message.to && message.to.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      (message.messageContent && message.messageContent.toLowerCase().includes(searchQuery.toLowerCase()));
+      q === "" ||
+      (message.to && message.to.toLowerCase().includes(q)) ||
+      (message.from && message.from.toLowerCase().includes(q)) ||
+      (message.messageContent && message.messageContent.toLowerCase().includes(q));
     const matchesStatus = statusFilter === "all" || message.status === statusFilter;
     return matchesSearch && matchesStatus;
   });

@@ -97,18 +97,19 @@ export function LibraryDialog({ open, onOpenChange, onUseTemplate }: LibraryDial
   }
 
   const filteredTemplates = templates.filter((template) => {
+    const q = searchQuery.trim().toLowerCase();
     const matchesSearch =
-      searchQuery === "" ||
-      template.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      template.content.toLowerCase().includes(searchQuery.toLowerCase())
+      q === "" ||
+      (template.name && template.name.toLowerCase().includes(q)) ||
+      (template.content && template.content.toLowerCase().includes(q));
 
     const matchesTab =
       activeTab === "templates" ||
       (activeTab === "company" && template.category === "company") ||
-      (activeTab === "personal" && template.category === "personal")
+      (activeTab === "personal" && template.category === "personal");
 
-    return matchesSearch && matchesTab
-  })
+    return matchesSearch && matchesTab;
+  });
 
   const companyTemplates = templates.filter((t) => t.category === "company")
   const personalTemplates = templates.filter((t) => t.category === "personal")

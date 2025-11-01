@@ -7,13 +7,29 @@ import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from "recharts"
 import { Activity, Users, MessageSquare, AlertTriangle, TrendingUp, TrendingDown } from "lucide-react"
 import { useWebSocket } from "@/hooks/use-websocket"
 import type { SystemMetrics } from "@/lib/websocket-server"
+import { authService } from "@/lib/auth"
 
 export function LiveMetrics() {
   const { connected, metrics, authenticateAsAdmin } = useWebSocket()
   const [metricsHistory, setMetricsHistory] = useState<SystemMetrics[]>([])
 
+  // Get current user from auth service
+  const [authError, setAuthError] = useState<string | null>(null)
+
   useEffect(() => {
-    authenticateAsAdmin("admin_token")
+    const currentUser = authService.getCurrentUser()
+    if (!currentUser) {
+      setAuthError("Not authenticated")
+      return
+    }
+
+    if (currentUser.role !== 'admin') {
+      setAuthError("Admin privileges required")
+      return
+    }
+
+    // Authenticate with the user's token
+    authenticateAsAdmin(`user_${currentUser.id}`)
   }, [authenticateAsAdmin])
 
   useEffect(() => {
@@ -45,6 +61,19 @@ export function LiveMetrics() {
   }
 
   const previousMetrics = metricsHistory[metricsHistory.length - 2]
+
+  if (authError) {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center h-32">
+          <div className="text-center">
+            <AlertTriangle className="h-8 w-8 text-red-500 mx-auto mb-2" />
+            <p className="text-sm text-red-600 dark:text-red-400">{authError}</p>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
 
   if (!connected) {
     return (

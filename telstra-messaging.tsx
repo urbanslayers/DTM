@@ -286,7 +286,67 @@ function DesktopMessaging() {
   // Message scheduling handler
   const handleScheduleMessage = async () => {
     try {
-      // Implement message scheduling logic
+      // If the quick-schedule inline form has a date/time, use it to schedule immediately.
+      // Otherwise open the full Send Later dialog.
+      if (scheduleDateTime && scheduleDateTime.trim()) {
+        const scheduledAt = new Date(scheduleDateTime)
+
+        // Determine message content
+        const content = (scheduleMessage && scheduleMessage.trim()) ? scheduleMessage : messageText
+
+        // Build recipients list from quick form or main form/selected contacts
+        let recipients: string[] = []
+        try {
+          if (scheduleRecipients && scheduleRecipients.trim()) {
+            recipients = messagingService.parseRecipients(scheduleRecipients)
+          } else if (toRecipients && toRecipients.trim()) {
+            recipients = messagingService.parseRecipients(toRecipients)
+          }
+
+          if (selectedContacts && selectedContacts.length > 0) {
+            const selectedContactObjects = await contactService.getSelectedContacts(selectedContacts)
+            recipients = [...recipients, ...selectedContactObjects.map((c) => c.phoneNumber)]
+          }
+        } catch (e) {
+          console.warn('[Schedule] Failed to parse recipients', e)
+        }
+
+        if (!content || content.trim().length === 0) {
+          showAlert('error', 'Please enter a message to schedule')
+          return
+        }
+
+        if (!recipients || recipients.length === 0) {
+          showAlert('error', 'Please provide at least one recipient to schedule the message')
+          return
+        }
+
+        const messageType = activeMenuItem === 2 ? 'mms' : 'sms'
+
+        const result = await messagingService.sendMessage(recipients, content, messageType, scheduledAt, selectedTemplate ? templates.find((t) => t.id === selectedTemplate)?.name : undefined)
+
+        if (result.success) {
+          showAlert('success', `Message scheduled for ${scheduledAt.toLocaleString()}`)
+          // Clear quick-schedule form
+          setScheduleRecipients('')
+          setScheduleMessage('')
+          setScheduleDateTime('')
+          // Reload scheduled messages and sent lists
+          try {
+            const scheduled = await messagingService.getScheduledMessages()
+            setScheduledMessages(scheduled || [])
+          } catch (e) {
+            // best effort
+          }
+          await loadData()
+          return
+        }
+
+        showAlert('error', result.error || 'Failed to schedule message')
+        return
+      }
+
+      // Fallback: open the Send Later dialog
       setShowSendLater(true);
     } catch (error) {
       console.error("Error scheduling message:", error);
@@ -301,11 +361,55 @@ function DesktopMessaging() {
   // Send later handler
   const handleSendLater = async (scheduledTime: Date) => {
     try {
-      // Implement send later logic
-      toast({
-        title: "Message scheduled",
-        description: `Message will be sent at ${scheduledTime.toLocaleString()}`,
-      });
+      // Schedule the current messageText/toRecipients (main compose area) at the given time
+      const content = messageText && messageText.trim() ? messageText : scheduleMessage
+
+      let recipients: string[] = []
+      try {
+        if (toRecipients && toRecipients.trim()) {
+          recipients = messagingService.parseRecipients(toRecipients)
+        }
+
+        if (selectedContacts && selectedContacts.length > 0) {
+          const selectedContactObjects = await contactService.getSelectedContacts(selectedContacts)
+          recipients = [...recipients, ...selectedContactObjects.map((c) => c.phoneNumber)]
+        }
+      } catch (e) {
+        console.warn('[SendLater] Failed to parse recipients', e)
+      }
+
+      if (!content || content.trim().length === 0) {
+        showAlert('error', 'Please enter a message to schedule')
+        return
+      }
+
+      if (!recipients || recipients.length === 0) {
+        showAlert('error', 'Please add at least one recipient before scheduling')
+        return
+      }
+
+      const messageType = activeMenuItem === 2 ? 'mms' : 'sms'
+
+      const result = await messagingService.sendMessage(recipients, content, messageType, scheduledTime, selectedTemplate ? templates.find((t) => t.id === selectedTemplate)?.name : undefined)
+
+      if (result.success) {
+        showAlert('success', `Message scheduled for ${scheduledTime.toLocaleString()}`)
+        // Clear compose form
+        setMessageText('')
+        setToRecipients('')
+        setSelectedContacts([])
+        // Refresh scheduled messages
+        try {
+          const scheduled = await messagingService.getScheduledMessages()
+          setScheduledMessages(scheduled || [])
+        } catch (e) {
+          // best effort
+        }
+        await loadData()
+        return
+      }
+
+      showAlert('error', result.error || 'Failed to schedule message')
     } catch (error) {
       console.error("Error scheduling message:", error);
       toast({
@@ -1070,15 +1174,26 @@ function DesktopMessaging() {
         contactService.getGroups(),
       ])
 
-      const lowercaseQuery = query.toLowerCase()
+      const lowercaseQuery = (query || "").toLowerCase().trim()
+      const normalizedQueryNumber = normalizeNumber(query)
 
       // Contacts come pre-filtered by the server search; apply a lightweight client filter just in case
-      const contactResults = (contactsData || []).filter(
-        (contact) =>
-          contact.name.toLowerCase().includes(lowercaseQuery) ||
-          (contact.phoneNumber && contact.phoneNumber.includes(query)) ||
-          (contact.email && contact.email.toLowerCase().includes(lowercaseQuery)),
-      )
+      const contactResults = (contactsData || []).filter((contact) => {
+        try {
+          const name = (contact.name || "").toString().toLowerCase()
+          const email = (contact.email || "").toString().toLowerCase()
+          const phone = contact.phoneNumber ? contact.phoneNumber.toString() : ""
+          const phoneNorm = normalizeNumber(phone)
+
+          return (
+            name.includes(lowercaseQuery) ||
+            (email && email.includes(lowercaseQuery)) ||
+            (phone && (phone.toLowerCase().includes(lowercaseQuery) || (normalizedQueryNumber && phoneNorm.includes(normalizedQueryNumber))))
+          )
+        } catch (e) {
+          return false
+        }
+      })
 
       // Templates
       const templateResults = (templatesData || []).filter(
@@ -1089,9 +1204,34 @@ function DesktopMessaging() {
       // Sent messages: `messagingService.getSentMessages()` returns { messages, totalCount }
       const sentArray = Array.isArray(sentData) ? sentData : sentData?.messages || []
       const messageResults = (sentArray || []).filter((message: any) => {
-        const toMatches = (message.to || []).some((recipient: string) => recipient.includes(query))
-        const content = (message.content || "").toString().toLowerCase()
-        return toMatches || content.includes(lowercaseQuery)
+        try {
+          // Normalize recipients: support array or comma/semicolon-separated string
+          let recipients: string[] = []
+          if (Array.isArray(message.to)) {
+            recipients = message.to.map((r: any) => (r || "").toString())
+          } else if (typeof message.to === "string") {
+            recipients = message.to.split(/[;,\s]+/).map((r: string) => (r || "").toString()).filter(Boolean)
+          } else if (Array.isArray(message.recipients)) {
+            recipients = message.recipients.map((r: string) => (r || "").toString())
+          }
+
+          const recipientsMatch = recipients.some((recipient) => {
+            const r = recipient.toLowerCase()
+            const rNorm = normalizeNumber(recipient)
+            return r.includes(lowercaseQuery) || (normalizedQueryNumber && rNorm.includes(normalizedQueryNumber))
+          })
+
+          // Message body/content may be in different properties depending on source
+          const contentRaw = (message.content || message.messageContent || message.message || "").toString()
+          const content = contentRaw.toLowerCase()
+
+          // Also match sender/from fields
+          const from = (message.from || message.fromNumber || "").toString().toLowerCase()
+
+          return recipientsMatch || content.includes(lowercaseQuery) || (from && from.includes(lowercaseQuery))
+        } catch (e) {
+          return false
+        }
       })
 
       // Users returned from admin API are already filtered server-side, but trim and limit
@@ -1280,14 +1420,30 @@ function DesktopMessaging() {
     const selectedContactObjects = await contactService.getSelectedContacts(selectedContacts)
     const phoneNumbers = selectedContactObjects.map((c) => c.phoneNumber)
 
-    const currentRecipients = toRecipients.trim()
-    const newRecipients = currentRecipients
-      ? `${currentRecipients}; ${phoneNumbers.join("; ")}`
-      : phoneNumbers.join("; ")
+    // Add to the appropriate recipients field depending on the active tab/page
+    try {
+      if (activeMenuItem === 8) {
+        // Scheduled Messages quick-schedule form
+        const current = (scheduleRecipients || "").trim()
+        const newVal = current ? `${current}; ${phoneNumbers.join("; ")}` : phoneNumbers.join("; ")
+        setScheduleRecipients(newVal)
+        setSelectedContacts([])
+        showAlert("success", `Added ${phoneNumbers.length} contact(s) to scheduled recipients`)
+      } else {
+        // Default: compose/send area recipients
+        const currentRecipients = (toRecipients || "").trim()
+        const newRecipients = currentRecipients
+          ? `${currentRecipients}; ${phoneNumbers.join("; ")}`
+          : phoneNumbers.join("; ")
 
-    setToRecipients(newRecipients)
-    setSelectedContacts([])
-    showAlert("success", `Added ${phoneNumbers.length} contact(s) to recipients`)
+        setToRecipients(newRecipients)
+        setSelectedContacts([])
+        showAlert("success", `Added ${phoneNumbers.length} contact(s) to recipients`)
+      }
+    } catch (e) {
+      console.warn('Failed to add selected contacts to recipients', e)
+      showAlert('error', 'Failed to add contacts to recipients')
+    }
   }
 
   // Fetch inbox messages
@@ -3268,17 +3424,7 @@ function DesktopMessaging() {
                         <SelectItem value="cancelled">Cancelled</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={() => {
-                      // Scroll to the Quick Schedule Form
-                      const formElement = document.getElementById('quick-schedule-form');
-                      if (formElement) {
-                        formElement.scrollIntoView({ behavior: 'smooth' });
-                      }
-                      showAlert("success", "Scroll down to schedule a new message");
-                    }}>
-                      <Clock className="w-4 h-4 mr-2" />
-                      Schedule New
-                    </Button>
+                    {/* Schedule New button removed per user request */}
                   </div>
                 </div>
 

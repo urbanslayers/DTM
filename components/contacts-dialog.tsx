@@ -186,19 +186,20 @@ export function ContactsDialog({ open, onOpenChange, editingContact: externalEdi
   }
 
   const filteredContacts = contacts.filter((contact) => {
+    const q = searchQuery.trim().toLowerCase();
     const matchesSearch =
-      searchQuery === "" ||
-      contact.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      contact.phoneNumber.includes(searchQuery) ||
-      (contact.email && contact.email.toLowerCase().includes(searchQuery.toLowerCase()))
+      q === "" ||
+      (contact.name && contact.name.toLowerCase().includes(q)) ||
+      (contact.phoneNumber && contact.phoneNumber.toLowerCase().includes(q)) ||
+      (contact.email && contact.email.toLowerCase().includes(q));
 
     const matchesTab =
       activeTab === "all" ||
       (activeTab === "company" && contact.category === "company") ||
-      (activeTab === "personal" && contact.category === "personal")
+      (activeTab === "personal" && contact.category === "personal");
 
-    return matchesSearch && matchesTab
-  })
+    return matchesSearch && matchesTab;
+  });
 
   // Compute contact counts by category
   const companyContacts = contacts.filter(contact => contact.category === "company")

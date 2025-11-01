@@ -9,10 +9,25 @@ import type { Analytics } from "@/lib/types"
 
 interface AnalyticsDashboardProps {
   analytics: Analytics | null
+  period: string
+  onPeriodChange: (period: string) => void
+  loading?: boolean
+  error?: string | null
 }
 
-export function AnalyticsDashboard({ analytics }: AnalyticsDashboardProps) {
-  if (!analytics) {
+export function AnalyticsDashboard({ analytics, period, onPeriodChange, loading = false, error }: AnalyticsDashboardProps) {
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <AlertTriangle className="h-8 w-8 text-red-500 mx-auto mb-2" />
+          <p className="text-sm text-red-600">{error}</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (loading || !analytics) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
@@ -28,17 +43,25 @@ export function AnalyticsDashboard({ analytics }: AnalyticsDashboardProps) {
           <h2 className="text-2xl font-bold">Analytics Dashboard</h2>
           <p className="text-gray-600">Detailed insights and performance metrics</p>
         </div>
-        <Select defaultValue="7d">
-          <SelectTrigger className="w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="1d">Last 24 hours</SelectItem>
-            <SelectItem value="7d">Last 7 days</SelectItem>
-            <SelectItem value="30d">Last 30 days</SelectItem>
-            <SelectItem value="90d">Last 90 days</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-4">
+          <Select value={period} onValueChange={onPeriodChange}>
+            <SelectTrigger className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1d">Last 24 hours</SelectItem>
+              <SelectItem value="7d">Last 7 days</SelectItem>
+              <SelectItem value="30d">Last 30 days</SelectItem>
+              <SelectItem value="90d">Last 90 days</SelectItem>
+            </SelectContent>
+          </Select>
+          {loading && (
+            <div className="flex items-center gap-2">
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-purple-500"></div>
+              <span className="text-sm text-gray-600">Updating...</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Key Metrics */}
