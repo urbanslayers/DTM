@@ -309,7 +309,6 @@ npm run start
 ```env
 NODE_ENV=production
 DATABASE_URL=your_production_database_url
-NEXTAUTH_SECRET=your_production_secret
 TELSTRA_CLIENT_ID=your_production_client_id
 TELSTRA_CLIENT_SECRET=your_production_client_secret
 ```
