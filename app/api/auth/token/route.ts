@@ -35,6 +35,9 @@ export async function POST(request: NextRequest) {
         "Pragma": "no-cache",
         "Expires": "0"
       },
+      // Ensure Next.js does not cache this external auth response
+      // so we always get a fresh access token from Telstra.
+      cache: 'no-store',
       body: params,
     })
 

@@ -2418,13 +2418,38 @@ function DesktopMessaging() {
                   <Button
                     variant="outline"
                     onClick={() => {
-                      if (selectedMessage) {
+                      (async () => {
+                        if (!selectedMessage) return
+
+                        const idToMark = selectedMessage.messageId || selectedMessage.id
+                        if (!idToMark) return
+
+                        // Keep a snapshot so we can revert on failure
+                        const prev = [...inboxMessages]
+
+                        // Optimistically mark only the matching message (normalize id fields)
                         setInboxMessages((msgs) =>
-                          msgs.map((msg) =>
-                            msg.messageId === selectedMessage.messageId ? { ...msg, status: "delivered" } : msg
-                          )
-                        );
-                      }
+                          msgs.map((msg) => {
+                            const mid = msg.messageId || msg.id
+                            return mid === idToMark ? { ...msg, status: "delivered", read: true } : msg
+                          })
+                        )
+
+                        try {
+                          const ok = await inboxService.markAsRead(idToMark)
+                          if (ok) {
+                            showAlert('success', 'Message marked as read')
+                          } else {
+                            // revert
+                            setInboxMessages(prev)
+                            showAlert('error', 'Failed to mark message as read')
+                          }
+                        } catch (e) {
+                          console.warn('Failed to mark message as read', e)
+                          setInboxMessages(prev)
+                          showAlert('error', 'Failed to mark message as read')
+                        }
+                      })()
                     }}
                     disabled={!selectedMessage}
                   >

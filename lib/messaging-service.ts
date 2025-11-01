@@ -4,7 +4,7 @@ import { authService } from "./auth"
 class MessagingService {
   private _pollTimer: number | null = null
   private _isPolling: boolean = false
-  private _pollIntervalMs: number = 30 * 1000 // default 30s
+  private _pollIntervalMs: number = 15 * 1000 // default 5s
   private _minIntervalMs: number = 15 * 1000 // don't poll faster than 15s
   private _maxIntervalMs: number = 5 * 60 * 1000 // backoff max 5 minutes
   private _snoozeUntil: number | null = null // timestamp till which polling is paused
@@ -314,6 +314,7 @@ class MessagingService {
     intervalMs?: number
     fetchSent?: boolean
     fetchInbox?: boolean
+    direction?: "incoming" | "outgoing"
   }) {
     if (this._isPolling) return
     this._isPolling = true
@@ -321,6 +322,7 @@ class MessagingService {
     const onUpdate = options?.onUpdate
     const fetchSent = options?.fetchSent !== false
     const fetchInbox = options?.fetchInbox !== false
+    const direction = options?.direction || "incoming"
 
     if (options?.intervalMs) {
       const v = Math.max(this._minIntervalMs, Math.min(this._maxIntervalMs, options.intervalMs))
@@ -328,7 +330,7 @@ class MessagingService {
     }
 
     // Kick off the poll loop
-    const pollOnce = async () => {
+    const pollOnce = async (direction: "incoming" | "outgoing") => {
       if (!this._isPolling) return
 
       // If snoozed due to Retry-After, skip until expiry
@@ -397,7 +399,7 @@ class MessagingService {
             // Include userId in the query so the server returns DB-backed inbox messages
             // (which are sorted by receivedAt desc). If userId is omitted the API falls
             // back to the Telstra provider which can return a different order.
-            const inboxUrl = `/api/messaging/inbox?userId=${encodeURIComponent(user.id)}&limit=50&filter=all`
+            const inboxUrl = `/api/messaging/inbox?userId=${encodeURIComponent(user.id)}&limit=50&filter=all&direction=incoming`
             const response = await fetch(inboxUrl, {
               headers: { Authorization: `Bearer user_${user.id}` },
             })
@@ -443,7 +445,7 @@ class MessagingService {
     }
 
     // Start immediately
-    pollOnce().catch((e) => console.warn('[MessagingService] Poll loop start failed', e))
+    pollOnce(direction).catch((e) => console.warn('[MessagingService] Poll loop start failed', e))
   }
 
   stopPollingMessages() {

@@ -88,6 +88,7 @@ class TelstraAPI {
             params.append('client_id', String(process.env.TELSTRA_CLIENT_ID))
             params.append('client_secret', String(process.env.TELSTRA_CLIENT_SECRET))
             params.append('scope', 'free-trial-numbers:read free-trial-numbers:write messages:read messages:write virtual-numbers:read virtual-numbers:write reports:read reports:write')
+            console.log("[TelstraAPI] Authentication scope being sent:", params.get('scope'));
 
             const telstraRes = await fetch('https://products.api.telstra.com/v2/oauth/token', {
               method: 'POST',
@@ -97,18 +98,20 @@ class TelstraAPI {
                 'Pragma': 'no-cache',
                 'Expires': '0',
               },
+              // Avoid Next.js/server fetch caching so token responses are fresh
+              cache: 'no-store',
               body: params,
             })
 
             const data = await telstraRes.json()
             console.log('[TelstraAPI] Direct token fetch status:', telstraRes.status)
+            console.log('[TelstraAPI] Direct token fetch response data:', data);
             // If successful, set token and expiry
             if (telstraRes.ok && data.access_token) {
               this.accessToken = data.access_token
-              this.tokenExpiry = Date.now() + (data.expires_in * 1000) - (5 * 60 * 1000)
-              console.log('[TelstraAPI] ✅ Direct authentication successful, token set')
-              return true
-            }
+                        this.tokenExpiry = Date.now() + (data.expires_in * 1000) - (5 * 60 * 1000)
+                        console.log('[TelstraAPI] ✅ Direct authentication successful, NEW token set, expires at:', new Date(this.tokenExpiry))
+                            return true            }
             console.error('[TelstraAPI] Direct authentication failed:', data)
             return false
           } catch (err) {
@@ -145,7 +148,7 @@ class TelstraAPI {
           this.accessToken = data.access_token
           // Store expiry time (subtract 5 minutes buffer to refresh early)
           this.tokenExpiry = Date.now() + (data.expires_in * 1000) - (5 * 60 * 1000)
-          console.log('[TelstraAPI] ✅ Authentication successful, NEW token expires at:', new Date(this.tokenExpiry))
+          console.log('[TelstraAPI] ✅ Authentication successful via internal API, NEW token expires at:', new Date(this.tokenExpiry))
           return true
         }
         console.error('[TelstraAPI] Authentication failed with status:', response.status)
@@ -175,31 +178,24 @@ class TelstraAPI {
   private async getAuthHeaders() {
     console.log("[TelstraAPI] getAuthHeaders called - checking token validity");
 
-    // Check if we have a valid token that hasn't expired
-    if (this.accessToken && !this.isTokenExpired()) {
-      console.log("[TelstraAPI] ✅ Using existing valid token");
-      const headers = {
-         "Telstra-api-version": "2.0.0",
-        "Content-Language": "en-au",
-        "Authorization": `Bearer ${this.accessToken}`,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Accept-Charset": "utf-8"
+    let authenticated = false; // Initialize authenticated
+
+    // Always attempt to authenticate if token is missing or expired
+    if (!this.accessToken || this.isTokenExpired()) {
+      console.log("[TelstraAPI] Token missing or expired, attempting to authenticate...");
+      authenticated = await this.authenticate(); // Assign to authenticated
+      if (!authenticated) {
+        console.error("[TelstraAPI] Authentication failed in getAuthHeaders");
+        throw new Error("Failed to authenticate with Telstra API");
       }
-      console.log("[TelstraAPI] ✅ Existing auth headers generated successfully");
-      return headers;
+    } else {
+      console.log("[TelstraAPI] ✅ Using existing valid token");
+      authenticated = true; // Set to true if using existing token
     }
 
-    // Only get a fresh token if current one is expired or missing
-    console.log("[TelstraAPI] Token expired or missing, getting fresh token...");
-    const authenticated = await this.authenticate()
-    if (!authenticated) {
-      console.error("[TelstraAPI] Authentication failed in getAuthHeaders");
-      throw new Error("Failed to authenticate with Telstra API")
-    }
 
     const headers = {
-      "Telstra-api-version": "2.0.0",
+      "Telstra-api-version": "3.1.0",
       "Content-Language": "en-au",
       "Authorization": `Bearer ${this.accessToken}`,
       "Content-Type": "application/json",
@@ -213,19 +209,22 @@ class TelstraAPI {
 
   private async makeAuthenticatedRequest(
     url: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    isRetry: boolean = false
   ): Promise<{ response: Response; data: any }> {
-    const authHeaders = await this.getAuthHeaders();
-  console.log("[TelstraAPI] Making authenticated request to:", url);
-  // Sanitize headers before logging to avoid exposing sensitive tokens
-  console.log("[TelstraAPI] Request headers:", JSON.stringify(this.sanitizeHeaders(authHeaders), null, 2));
+    let authHeaders = await this.getAuthHeaders();
+    console.log("[TelstraAPI] Making authenticated request to:", url);
+    // Sanitize headers before logging to avoid exposing sensitive tokens
+    console.log("[TelstraAPI] Request headers:", JSON.stringify(this.sanitizeHeaders(authHeaders), null, 2));
 
-    const response = await fetch(url, {
+    let response = await fetch(url, {
       ...options,
       headers: {
         ...authHeaders,
         ...options.headers,
       },
+      // Ensure these authenticated requests are not cached by Next.js
+      cache: 'no-store',
     });
 
     let data: any = {};
@@ -233,6 +232,20 @@ class TelstraAPI {
       data = await response.json();
     } catch (e) {
       // Response might not be JSON
+    }
+
+    if (response.status === 401 && !isRetry) {
+      console.warn("[TelstraAPI] Received 401, attempting to re-authenticate and retry...");
+      // Clear the expired token to force a fresh one
+      this.accessToken = null;
+      this.tokenExpiry = null;
+      const authenticated = await this.authenticate();
+      if (authenticated) {
+        console.log("[TelstraAPI] Re-authentication successful, retrying original request...");
+        return this.makeAuthenticatedRequest(url, options, true); // Retry the request
+      } else {
+        console.error("[TelstraAPI] Re-authentication failed after 401.");
+      }
     }
 
     return { response, data };
@@ -264,6 +277,8 @@ class TelstraAPI {
           messageContent: body, // Use 'messageContent' instead of 'body' for SMS
           ...options,
         }),
+        // Do not cache message send requests
+        cache: 'no-store',
       })
 
       let data;
@@ -318,6 +333,7 @@ class TelstraAPI {
           to,
           ...options,
         }),
+        cache: 'no-store',
       })
 
       const data = await response.json()
@@ -336,6 +352,7 @@ class TelstraAPI {
     try {
       const response = await fetch(`${this.baseURL}/messaging/v3/messages/${messageId}`, {
         headers: await this.getAuthHeaders(),
+        cache: 'no-store',
       })
 
       const data = await response.json()
@@ -363,6 +380,7 @@ class TelstraAPI {
 
       const response = await fetch(`${this.baseURL}/messaging/v3/messages?${params}`, {
         headers: await this.getAuthHeaders(),
+        cache: 'no-store',
       })
 
       const data = await response.json()
@@ -381,6 +399,7 @@ class TelstraAPI {
     try {
       const response = await fetch(`${this.baseURL}/messaging/v3/account/balance`, {
         headers: await this.getAuthHeaders(),
+        cache: 'no-store',
       })
 
       const data = await response.json()
@@ -408,6 +427,7 @@ class TelstraAPI {
 
       const response = await fetch(`${this.baseURL}/messaging/v3/reports?${params}`, {
         headers: await this.getAuthHeaders(),
+        cache: 'no-store',
       })
 
       const data = await response.json()
@@ -447,6 +467,7 @@ class TelstraAPI {
       if (response.ok) {
         return data;
       } else {
+        console.error("[TelstraAPI] getMessages API call failed:", response.status, data);
         // Check response status
         if (response.status === 401) {
           console.error("[TelstraAPI] Authentication failed:", data);
