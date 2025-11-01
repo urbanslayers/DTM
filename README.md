@@ -8,16 +8,16 @@ A comprehensive messaging platform built with Next.js and TypeScript that integr
 - **SMS & MMS Support**: Send text messages and multimedia messages
 - **Bulk Messaging**: Send messages to multiple recipients simultaneously
 - **Message Scheduling**: Schedule messages for future delivery
-- **Message Templates**: Create and manage reusable message templates
+- **Message Templates**: Create and manage reusable message templates. Instantly load a template and auto-navigate to the Send SMS page for quick sending.
 - **Contact Management**: Organize contacts into personal and company categories
 - **Inbox Management**: View and manage incoming messages with read/unread status
 
 ### Advanced Features
-- **Rules Wizard**: Create automated rules for message handling (forward, reply, delete, folder)
-- **Real-time Notifications**: WebSocket-based real-time message status updates
+- **Rules Wizard**: Create automated rules for message handling (forward, reply, delete, folder). Messages sent by rules are now saved and visible in Sent Messages.
+- **Real-time Notifications**: WebSocket-based real-time message status updates. Sent and Inbox messages update instantly across all clients—no manual refresh required.
 - **Media Library**: Upload and manage media files for MMS messages
 - **Search Functionality**: Global search across contacts, templates, and messages
-- **Message History**: Track sent messages with delivery status
+- **Message History**: Track sent messages with delivery status. Sent Messages view updates in real time, including messages sent by automation rules.
 - **Admin Panel**: Administrative interface for user management
 
 ### User Interface
@@ -38,6 +38,22 @@ A comprehensive messaging platform built with Next.js and TypeScript that integr
 - **Icons**: Lucide React
 
 ## 📋 Prerequisites
+
+## 👤 Creating the Initial Admin User
+
+Before you can log in and use the application, you must create the first admin user. Use the provided script to do this:
+
+1. Open a terminal and navigate to the `scripts` directory:
+   ```bash
+   cd scripts
+   ```
+2. Run the admin user creation script:
+   ```bash
+   node create-admin-user.js
+   ```
+3. The admin username and password are configured directly in the `create-admin-user.js` file. Edit this file to set your desired admin email and password before running the script. **Important:** Change the default credentials before deploying to production for security.
+
+Once the initial admin user is created, you can log in to the application as that user. Additional admins and regular users can then be added through the Admin Panel in the web UI.
 
 Before running this application, ensure you have:
 
@@ -118,7 +134,7 @@ The application features a tabbed interface with the following sections:
 
 #### 1. Send SMS
 - Compose and send SMS messages
-- Use message templates
+- Instantly load a message template and auto-navigate here when using a template
 - Bulk send to multiple recipients
 - Schedule messages for later delivery
 
@@ -137,6 +153,7 @@ The application features a tabbed interface with the following sections:
 - Create automated message handling rules
 - Set conditions (contains, from, time, keyword)
 - Define actions (forward, reply, delete, folder)
+- Messages sent by rules are now saved and appear in Sent Messages
 
 #### 5. Contacts
 - Manage personal and company contacts
@@ -148,10 +165,13 @@ The application features a tabbed interface with the following sections:
 - Create and manage message templates
 - Store frequently used messages
 - Organize templates by category
+- Using a template will switch you to the Send SMS tab automatically
 
 #### 7. Sent Messages
 - View message history
 - Track delivery status
+- Sent Messages update in real time (no manual refresh needed)
+- Messages sent by rules appear here automatically
 - Filter by status (sent, delivered, failed)
 - Pagination for large message lists
 
@@ -352,9 +372,12 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Message scheduling feature
 - Rules wizard for automation
 - Enhanced search functionality
-- Real-time notifications
+- Real-time notifications (Inbox and Sent Messages update instantly)
 - Media library management
 - Improved UI/UX
+- Message Templates now auto-navigate to Send SMS when used
+- Messages sent by rules are now persisted and appear in Sent Messages
+- Sent Messages view updates in real time (no manual refresh needed)
 
 ---
 
