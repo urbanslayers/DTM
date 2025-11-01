@@ -188,7 +188,11 @@ function DesktopMessaging() {
   const handleUseTemplate = (template: MessageTemplate) => {
     // Ensure we set the canonical editor state variable
     setMessageText(template.content);
+    // Also mark the template as selected so UI reflects it
+    if (template && (template as any).id) setSelectedTemplate((template as any).id)
+    // Close the library and switch to the Send SMS tab so user can send immediately
     setShowLibrary(false);
+    setActiveMenuItem(1)
     toast({
       title: "Template applied",
       description: "The template has been loaded into the message editor",
@@ -1011,7 +1015,21 @@ function DesktopMessaging() {
 
     const sentHandler = (data: any) => {
       try {
-        if (data) setSentApiMessages((prev) => [data, ...prev])
+        if (data) {
+          // Normalize the incoming data to match the sent message shape expected by the UI
+          const normalized = {
+            messageId: data.id || data.messageId || '',
+            to: Array.isArray(data.recipients) ? data.recipients.join(', ') : (data.to || ''),
+            messageContent: data.content || data.messageContent || '',
+            status: data.status || 'sent',
+            createTimestamp: data.sentAt || data.createTimestamp || new Date(),
+            sentTimestamp: data.sentAt || data.sentTimestamp || new Date(),
+            receivedTimestamp: data.deliveredAt || data.receivedTimestamp || null,
+            from: data.from || null,
+            credits: data.credits || 0,
+          }
+          setSentApiMessages((prev) => [normalized, ...prev])
+        }
       } catch (e) {
         console.warn('Failed to handle real-time sent message', e)
       }
