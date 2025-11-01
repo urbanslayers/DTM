@@ -38,6 +38,12 @@ const nextConfig = {
         './lib/database-init': './lib/database-init',
         './lib/websocket-server': './lib/websocket-server',
       })
+
+      // Ensure variable-processor is properly bundled for client-side
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        './lib/variable-processor': './lib/variable-processor',
+      }
     }
 
     return config

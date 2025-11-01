@@ -146,7 +146,8 @@ export async function GET(request: NextRequest) {
           const toCreate = providerMessages.filter((pm) => !existingIds.has(pm.id))
           for (const pm of toCreate) {
             try {
-              await prisma.inboxMessage.create({
+              // Create the message in the database
+              const newMessage = await prisma.inboxMessage.create({
                 data: {
                   id: pm.id,
                   userId: userId,
@@ -159,8 +160,12 @@ export async function GET(request: NextRequest) {
                   read: false,
                   folder: pm.folder || 'personal',
                 }
-              })
-              messages.push(pm)
+              });
+              messages.push(pm);
+
+              // Process the new message through rules
+              const { processMessageWithRules } = await import('@/lib/rules-processor');
+              await processMessageWithRules(userId, { from: pm.from, content: pm.content });
             } catch (createErr) {
               console.warn('[INBOX API] Failed to persist provider message:', pm.id, createErr)
             }

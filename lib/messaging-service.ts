@@ -8,12 +8,47 @@ class MessagingService {
   private _minIntervalMs: number = 15 * 1000 // don't poll faster than 15s
   private _maxIntervalMs: number = 5 * 60 * 1000 // backoff max 5 minutes
   private _snoozeUntil: number | null = null // timestamp till which polling is paused
+
+  private async replaceTemplateVariables(content: string, userId?: string): Promise<string> {
+    const { variableProcessor } = await import('./variable-processor');
+    
+    // Get user data if userId is provided
+    let userData = null;
+    if (userId) {
+      try {
+        const response = await fetch(`/api/admin/users/${userId}`, {
+          headers: {
+            'Authorization': `Bearer user_${userId}`,
+          },
+        });
+        if (response.ok) {
+          userData = await response.json();
+        }
+      } catch (error) {
+        console.error("[MessagingService] Error fetching user data for variables:", error);
+      }
+    }
+
+    // Process the template with our variable processor
+    return await variableProcessor.processTemplate(
+      content,
+      userData,
+      undefined, // No campaign data in this context
+      {
+        // Add any message-specific custom variables here
+        message_id: `msg-${Date.now()}`,
+        sent_date: new Date().toLocaleDateString(),
+        sent_time: new Date().toLocaleTimeString(),
+      }
+    );
+  }
   async sendMessage(
     to: string[],
     content: string,
-    type: "sms" | "mms" = "sms",
+    type: "sms" | "mms" | "email" = "sms",
     scheduledAt?: Date,
     templateName?: string,
+    subject?: string,
   ): Promise<{ success: boolean; messageId?: string; error?: string }> {
     console.log("[MessagingService] Starting sendMessage with:", {
       to: to.length + " recipients",
@@ -32,6 +67,10 @@ class MessagingService {
     console.log("[MessagingService] User authenticated:", user.username);
 
     // Validate and normalize phone numbers
+    // Replace template variables in the content
+    const processedContent = await this.replaceTemplateVariables(content, user.id);
+
+    // Validate and normalize phone numbers
     const validNumbers = to
       .filter((number) => this.isValidPhoneNumber(number))
       .map((number) => this.normalizePhoneNumber(number))
@@ -43,7 +82,7 @@ class MessagingService {
     console.log("[MessagingService] Valid recipients:", validNumbers.length);
 
     // Calculate credits needed
-    const creditsNeeded = this.calculateCredits(content, type) * validNumbers.length
+    const creditsNeeded = this.calculateCredits(processedContent, type) * validNumbers.length
     if (user.credits < creditsNeeded) {
       console.error("[MessagingService] Insufficient credits:", { userCredits: user.credits, needed: creditsNeeded });
       return { success: false, error: "Insufficient credits" }
@@ -52,7 +91,34 @@ class MessagingService {
     console.log("[MessagingService] Credits check passed, needed:", creditsNeeded);
 
     try {
-      // Send via Next.js API routes which will call Telstra API with proper parameters
+      // Handle email differently from SMS/MMS
+      if (type === "email") {
+        // For email, send to all recipients at once
+        const emailEndpoint = "/api/messaging/email";
+        const emailPayload = {
+          to: validNumbers,
+          content,
+          subject: subject || "New Message",
+          userId: user.id
+        };
+
+        const response = await fetch(emailEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer user_${user.id}`,
+          },
+          body: JSON.stringify(emailPayload),
+        });
+
+        const result = await response.json();
+        if (response.ok && result.success) {
+          return { success: true, messageId: `email-${Date.now()}` };
+        }
+        return { success: false, error: result.error || "Failed to send email" };
+      }
+
+      // For SMS/MMS, send via Next.js API routes which will call Telstra API with proper parameters
       const results = await Promise.all(
         validNumbers.map(async (number) => {
           console.log("[MessagingService] Sending to:", number);
@@ -60,7 +126,7 @@ class MessagingService {
           const endpoint = type === "sms" ? "/api/messaging/sms" : "/api/messaging/mms";
           const payload = {
             to: number,
-            body: content,
+            body: processedContent,
             from: user.personalMobile,
             ...(scheduledAt ? { scheduledAt } : {}), // Pass scheduledAt to API route
           };
@@ -111,7 +177,7 @@ class MessagingService {
             },
             body: JSON.stringify({
               to: validNumbers,
-              content,
+              content: processedContent,
               type,
               status: 'sent',
               credits: creditsNeeded,
@@ -247,12 +313,17 @@ class MessagingService {
   }
 
   private isValidPhoneNumber(number: string): boolean {
+    // Check if it's an email address for email type messages
+    if (number.includes('@')) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      return emailRegex.test(number);
+    }
     // Australian mobile number validation
     const cleaned = number.replace(/\s+/g, "")
     return /^(\+61|0)[4-5]\d{8}$/.test(cleaned)
   }
 
-  private calculateCredits(content: string, type: "sms" | "mms"): number {
+  private calculateCredits(content: string, type: "sms" | "mms" | "email"): number {
     if (type === "mms") {
       return 3 // MMS costs more
     }

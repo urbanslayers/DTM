@@ -3,13 +3,6 @@ const http = require('http');
 async function createDemoUsers() {
   const users = [
     {
-      username: 'demo',
-      email: 'demo@example.com',
-      password: 'password123',
-      role: 'user',
-      credits: 1000
-    },
-    {
       username: 'admin',
       email: 'admin@example.com',
       password: 'admin123',
