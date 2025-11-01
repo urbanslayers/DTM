@@ -88,14 +88,6 @@ Before running this application, ensure you have:
 
    # Database Configuration
    DATABASE_URL=your_database_url
-
-   # Authentication Secret
-   NEXTAUTH_SECRET=your_nextauth_secret
-   NEXTAUTH_URL=http://localhost:3000
-
-   # Optional: Admin Configuration
-   ADMIN_EMAIL=admin@example.com
-   ADMIN_PASSWORD=secure_admin_password
    ```
 
 4. **Database Initialization**
