@@ -39,6 +39,38 @@ A comprehensive messaging platform built with Next.js and TypeScript that integr
 
 ## 📋 Prerequisites
 
+- **Node.js 18+** (ships with npm)
+- **pnpm or yarn** (optional, npm works out of the box)
+- **Prisma CLI** (`npx prisma ...` works without a global install, but `npm install -g prisma` is convenient)
+- **Telstra Messaging API credentials**
+- **SQLite** – bundled file DB so no external server is needed
+
+## 📦 Required Packages
+
+Run the following to install every package declared in `package.json` (runtime + dev):
+
+```bash
+npm install
+# or
+pnpm install
+# or
+yarn install
+```
+
+Key direct dependencies include `next`, `react`, `@prisma/client`, `prisma`, `socket.io`, `tailwindcss`, and Radix UI packages. See [`requirements.txt`](requirements.txt) for the resolved list with versions.
+
+## ▶️ Start Commands
+
+| Use Case | Command |
+|----------|---------|
+| Start the Next.js dev server (includes API routes) | `npm run dev` |
+| Next.js dev server only (alias) | `npm run dev:next` |
+| Standalone Node server (if you want to hit `server.js`) | `npm run dev:server` |
+| Build for production | `npm run build` |
+| Start production server (after `npm run build`) | `npm run start` |
+
+> Tip: In a two-terminal workflow, keep `npm run dev` running for the UI/API and use `npm run dev:server` only if you need to test the legacy `server.js` integration.
+
 ## 👤 Creating the Initial Admin User
 
 Before you can log in and use the application, you must create the first admin user. Use the provided script to do this:
@@ -70,12 +102,7 @@ Before running this application, ensure you have:
    cd messaging-app
    ```
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   # or
-   yarn install
-   ```
+2. **Install dependencies** – see [Required Packages](#-required-packages)
 
 3. **Environment Setup**
 
@@ -101,16 +128,54 @@ Before running this application, ensure you have:
    - Media files
    - User settings
 
-5. **Start the development server**
+5. **Start the development server** (see [Start Commands](#️-start-commands) for options)
    ```bash
    npm run dev
-   # or
-   yarn dev
    ```
 
 6. **Open the application**
 
    Navigate to [http://localhost:3000](http://localhost:3000) in your browser.
+
+## 🔄 Updating to the Latest Version
+
+Whenever you need the freshest copy from GitHub:
+
+```bash
+# Ensure you are on the branch you want to update (usually main)
+git checkout main
+
+# Pull the latest commits from the remote (origin)
+git pull origin main
+
+# If you have local work you need to keep, stash it before pulling
+git stash push -m "wip before updating"
+git pull origin main
+git stash pop
+
+# If you need a clean slate before pulling
+git fetch origin
+git reset --hard origin/main
+
+# After pulling, reinstall deps if package versions changed
+npm install
+```
+
+> Replace `main` with your actual default branch if different. Commit or stash local changes before running `git pull` to avoid conflicts. When using `git stash`, resolve any merge conflicts that appear after `git stash pop` just like you would after a rebase.
+
+## 🧱 Prisma & Database Workflow
+
+The project uses Prisma ORM with SQLite. Common commands:
+
+| Purpose | Command |
+|---------|---------|
+| Generate Prisma Client after changing the schema | `npx prisma generate` |
+| Create & apply a new migration in dev | `npx prisma migrate dev --name <migration-name>` |
+| Apply pending migrations in production | `npx prisma migrate deploy` |
+| Push schema changes without a migration (prototype only) | `npx prisma db push` |
+| Inspect the database visually | `npx prisma studio` |
+
+SQLite files live under `/prisma/db`. Migrations are stored in `/prisma/migrations` and are applied automatically on deploy using the commands above.
 
 ## 🎯 Usage Guide
 

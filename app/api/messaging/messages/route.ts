@@ -14,8 +14,9 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get("userId");
     const status = searchParams.get("status");
-  const phoneNumbers = searchParams.get("phoneNumbers")?.split(",") || [];
-  const matchFromOnly = searchParams.get("matchFromOnly") === 'true'
+    const phoneNumbers = searchParams.get("phoneNumbers")?.split(",") || [];
+    const matchFromOnly = searchParams.get("matchFromOnly") === 'true'
+    const format = searchParams.get("format") || 'default'
     const limit = Number(searchParams.get("limit")) || 50;
     const offset = Number(searchParams.get("offset")) || 0;
 
@@ -128,6 +129,38 @@ export async function GET(request: NextRequest) {
         }
       }
 
+      const paginate = (list: any[]) => {
+        const totalCount = list.length
+        const start = Math.max(0, offset)
+        const end = Math.max(0, offset + limit)
+        return {
+          page: list.slice(start, end),
+          totalCount,
+        }
+      }
+
+      if (format === 'raw') {
+        const rawMessages = messages.map((msg: any) => ({
+          id: msg.id,
+          userId: msg.userId,
+          to: normalizeStoredRecipients(msg.to),
+          from: msg.from || null,
+          content: msg.content,
+          type: msg.type,
+          status: msg.status,
+          credits: msg.credits || 0,
+          isTemplate: !!msg.isTemplate,
+          createdAt: msg.createdAt,
+          sentAt: msg.sentAt || null,
+          deliveredAt: msg.deliveredAt || null,
+          scheduledAt: msg.scheduledAt || null,
+          templateName: msg.templateName || null,
+        }))
+
+        const { page, totalCount } = paginate(rawMessages)
+        return NextResponse.json({ messages: page, totalCount })
+      }
+
       // Transform DB message shape to the API shape expected by the Sent Messages UI
       const transformed = messages.map((msg: any) => {
         const recipients = normalizeStoredRecipients(msg.to)
@@ -144,11 +177,7 @@ export async function GET(request: NextRequest) {
         }
       })
 
-      // Compute pagination: total count then slice to the requested page
-      const totalCount = transformed.length
-      const start = Math.max(0, offset)
-      const end = Math.max(0, offset + limit)
-      const page = transformed.slice(start, end)
+      const { page, totalCount } = paginate(transformed)
 
       return NextResponse.json({ messages: page, totalCount })
     }
@@ -180,8 +209,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-  const body = await request.json()
-  const { to, content, type, status, credits, isTemplate, templateName, userId, from } = body
+    const body = await request.json()
+    const { to, content, type, status, credits, isTemplate, templateName, userId, from, scheduledAt } = body
 
     if (!userId || !to || !content) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
@@ -200,6 +229,7 @@ export async function POST(request: NextRequest) {
       credits: credits || 1,
       isTemplate: isTemplate || false,
       templateName,
+      scheduledAt: scheduledAt ? new Date(scheduledAt) : undefined,
     })
 
     await db.addSystemMessage(userId, "success", `Message saved successfully`)
@@ -207,6 +237,44 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message })
   } catch (error) {
     console.error("[MESSAGES API] Error:", error)
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const authHeader = request.headers.get("authorization")
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+
+    const body = await request.json()
+    const { messageId, userId, to, content, status, scheduledAt, templateName, type } = body || {}
+
+    if (!messageId || !userId) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+    }
+
+    const existingMessage = await db.getMessageById(messageId)
+    if (!existingMessage || existingMessage.userId !== userId) {
+      return NextResponse.json({ error: "Message not found" }, { status: 404 })
+    }
+
+    await db.logAPICall(userId, "/api/messaging/messages", "PATCH", Math.random() * 100 + 50, 200)
+
+    const updates: any = {}
+    if (Array.isArray(to)) updates.to = to
+    if (typeof content === 'string') updates.content = content
+    if (typeof status === 'string') updates.status = status
+    if (scheduledAt) updates.scheduledAt = new Date(scheduledAt)
+    if (typeof templateName === 'string') updates.templateName = templateName
+    if (typeof type === 'string') updates.type = type
+
+    const message = await db.updateMessage(messageId, updates)
+
+    return NextResponse.json({ message })
+  } catch (error) {
+    console.error("[MESSAGES API][PATCH] Error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

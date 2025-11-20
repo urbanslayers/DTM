@@ -164,47 +164,49 @@ class MessagingService {
 
       console.log("[MessagingService] All messages sent successfully");
 
-      // For immediate messages, save to database via API
+      const messageStatus = scheduledAt ? 'scheduled' : 'sent'
+
+      try {
+        // Include the sender's number when saving to DB so the messages API can
+        // reliably match sent messages to the user's allocated/send-from numbers.
+        await fetch('/api/messaging/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer user_${user.id}`,
+          },
+          body: JSON.stringify({
+            to: validNumbers,
+            content: processedContent,
+            type,
+            status: messageStatus,
+            credits: creditsNeeded,
+            isTemplate: !!templateName,
+            templateName,
+            userId: user.id,
+            from: user.personalMobile || null,
+            scheduledAt: scheduledAt ? scheduledAt.toISOString() : undefined,
+          }),
+        });
+      } catch (error) {
+        console.error("[MessagingService] Failed to save message to database:", error);
+      }
+
       if (!scheduledAt) {
+        // After saving the sent message, trigger a provider sync to pick up any
+        // provider-side records (e.g. provider inbox echoes or replies) so the
+        // inbox view updates promptly. Fire-and-forget but attempt to call.
         try {
-          // Include the sender's number when saving to DB so the messages API can
-          // reliably match sent messages to the user's allocated/send-from numbers.
-          await fetch('/api/messaging/messages', {
+          fetch('/api/messaging/sync-provider', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'Authorization': `Bearer user_${user.id}`,
             },
-            body: JSON.stringify({
-              to: validNumbers,
-              content: processedContent,
-              type,
-              status: 'sent',
-              credits: creditsNeeded,
-              isTemplate: !!templateName,
-              templateName,
-              userId: user.id,
-              from: user.personalMobile || null,
-            }),
-          });
-        
-          // After saving the sent message, trigger a provider sync to pick up any
-          // provider-side records (e.g. provider inbox echoes or replies) so the
-          // inbox view updates promptly. Fire-and-forget but attempt to call.
-          try {
-            fetch('/api/messaging/sync-provider', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer user_${user.id}`,
-              },
-              body: JSON.stringify({ userId: user.id, limit: 50 }),
-            }).catch((e) => console.warn('[MessagingService] sync-provider call failed', e))
-          } catch (e) {
-            console.warn('[MessagingService] sync-provider invocation failed', e)
-          }
-        } catch (error) {
-          console.error("[MessagingService] Failed to save message to database:", error);
+            body: JSON.stringify({ userId: user.id, limit: 50 }),
+          }).catch((e) => console.warn('[MessagingService] sync-provider call failed', e))
+        } catch (e) {
+          console.warn('[MessagingService] sync-provider invocation failed', e)
         }
       }
 
@@ -543,6 +545,7 @@ class MessagingService {
         matchFromOnly: 'true',
         offset: offset.toString(),
         limit: limit.toString(),
+        format: 'raw',
       });
 
       const response = await fetch(`/api/messaging/messages?${params.toString()}`, {
@@ -553,13 +556,102 @@ class MessagingService {
 
       if (response.ok) {
         const data = await response.json();
-        return data.messages || [];
+        const toArray = (val: any): string[] => {
+          if (!val) return []
+          if (Array.isArray(val)) return val.map(String)
+          if (typeof val === 'string') {
+            const trimmed = val.trim()
+            if (!trimmed) return []
+            if (trimmed.startsWith('[')) {
+              try {
+                const parsed = JSON.parse(trimmed)
+                return Array.isArray(parsed) ? parsed.map(String) : [String(parsed)]
+              } catch (e) {
+                return [trimmed]
+              }
+            }
+            if (trimmed.includes(',')) {
+              return trimmed.split(',').map((p) => p.trim()).filter(Boolean)
+            }
+            return [trimmed]
+          }
+          try {
+            return [String(val)]
+          } catch (e) {
+            return []
+          }
+        }
+
+        const toDate = (value: string | Date | null | undefined): Date | undefined => {
+          if (!value) return undefined
+          return value instanceof Date ? value : new Date(value)
+        }
+
+        return (data.messages || []).map((msg: any) => ({
+          id: msg.id,
+          userId: msg.userId,
+          to: toArray(msg.to),
+          from: msg.from || undefined,
+          content: msg.content,
+          type: msg.type || 'sms',
+          status: msg.status || 'scheduled',
+          credits: typeof msg.credits === 'number' ? msg.credits : 0,
+          isTemplate: !!msg.isTemplate,
+          createdAt: toDate(msg.createdAt) || new Date(),
+          sentAt: toDate(msg.sentAt),
+          deliveredAt: toDate(msg.deliveredAt),
+          scheduledAt: toDate(msg.scheduledAt),
+          templateName: msg.templateName || undefined,
+        }))
       }
     } catch (error) {
       console.error("[MessagingService] Error getting scheduled messages:", error);
     }
 
     return []
+  }
+
+  async updateScheduledMessage(
+    messageId: string,
+    updates: {
+      to?: string[]
+      content?: string
+      status?: Message['status']
+      scheduledAt?: Date
+      templateName?: string
+      type?: Message['type']
+    },
+  ): Promise<boolean> {
+    const user = authService.getCurrentUser()
+    if (!user) return false
+
+    const payload: Record<string, any> = {
+      messageId,
+      userId: user.id,
+    }
+
+    if (updates.to) payload.to = updates.to
+    if (typeof updates.content === 'string') payload.content = updates.content
+    if (updates.status) payload.status = updates.status
+    if (updates.scheduledAt) payload.scheduledAt = updates.scheduledAt.toISOString()
+    if (typeof updates.templateName === 'string') payload.templateName = updates.templateName
+    if (updates.type) payload.type = updates.type
+
+    try {
+      const response = await fetch('/api/messaging/messages', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer user_${user.id}`,
+        },
+        body: JSON.stringify(payload),
+      })
+
+      return response.ok
+    } catch (error) {
+      console.error('[MessagingService] Failed to update scheduled message:', error)
+      return false
+    }
   }
 
   private async getAllocatedPhoneNumbers(userId: string): Promise<string[]> {

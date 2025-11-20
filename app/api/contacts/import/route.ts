@@ -17,6 +17,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
     }
 
+    const uploader = await db.getUserById(userId)
+    if (!uploader) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 })
+    }
+
     // Log API call
     await db.logAPICall(userId, "/api/contacts/import", "POST", Math.random() * 100 + 50, 201)
 
@@ -43,12 +48,18 @@ export async function POST(request: NextRequest) {
           }
         }
 
+        const normalizedCategory = typeof c.category === 'string' ? c.category.trim().toLowerCase() : undefined
+        const fallbackCategory = uploader.role === 'admin' ? 'company' : 'personal'
+        const contactCategory = normalizedCategory === 'company' || normalizedCategory === 'personal'
+          ? normalizedCategory
+          : fallbackCategory
+
         const ct = await db.addContact({
           userId,
           name: c.name.trim(),
           phoneNumber: phoneRaw,
           email: c.email ? String(c.email).trim() : undefined,
-          category: c.category || 'personal',
+          category: contactCategory,
         })
         created.push(ct)
       } catch (e) {

@@ -5,9 +5,9 @@ import { AuthProvider } from "@/components/auth-provider"
 import { UserProvider } from "@/components/user-provider"
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.dev',
+  title: 'DTM Messaging App',
+  description: 'SMS messaging app using Telstra\'s API',
+  generator: 'DTM Messaging App',
 }
 
 export default function RootLayout({

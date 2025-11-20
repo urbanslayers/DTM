@@ -22,22 +22,37 @@ export async function GET(request: NextRequest) {
     // Log API call
     await db.logAPICall(userId, "/api/contacts", "GET", Math.random() * 100 + 50, 200)
 
-    // If the requesting user is an admin, return all contacts; otherwise return scoped contacts
+    // Helper to merge and deduplicate contacts by their unique id
+    const mergeContacts = (lists: any[][]) => {
+      const map = new Map<string, any>()
+      for (const list of lists) {
+        if (!Array.isArray(list)) continue
+        for (const contact of list) {
+          if (!contact?.id) continue
+          if (!map.has(contact.id)) {
+            map.set(contact.id, contact)
+          }
+        }
+      }
+      return Array.from(map.values())
+    }
+
+    // If the requesting user is an admin, return all contacts; otherwise return personal + shared company contacts
     let contacts: any[] = []
     try {
       const requestingUser = await db.getUserById(userId)
       if (requestingUser && requestingUser.role === 'admin') {
         contacts = await db.getAllContacts()
       } else {
-        contacts = await db.getContactsByUserId(userId)
+        const [personalContacts, companyContacts] = await Promise.all([
+          db.getContactsByUserId(userId),
+          db.getCompanyContacts(),
+        ])
+        contacts = mergeContacts([personalContacts || [], companyContacts || []])
       }
     } catch (e) {
       console.warn('[CONTACTS API] Could not determine user role, falling back to scoped contacts', e)
       contacts = await db.getContactsByUserId(userId)
-    }
-
-    if (category && category !== "all") {
-      contacts = contacts.filter((contact: any) => contact.category === category)
     }
 
     // Include users created via the admin dashboard as potential contacts.
@@ -62,13 +77,12 @@ export async function GET(request: NextRequest) {
       userContacts.forEach((uc: any) => {
         if (!existingPhones.has(uc.phoneNumber)) contacts.push(uc)
       })
-
-      // If a category filter is present and not 'all', reapply it so synthetic users respect it
-      if (category && category !== 'all') {
-        contacts = contacts.filter((contact: any) => contact.category === category)
-      }
     } catch (e) {
       console.warn('[CONTACTS API] Could not merge admin users into contacts list', e)
+    }
+
+    if (category && category !== 'all') {
+      contacts = contacts.filter((contact: any) => contact.category === category)
     }
 
     // Add search functionality

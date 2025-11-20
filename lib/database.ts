@@ -99,6 +99,10 @@ class Database {
     return this.db.getContactsByUserId(userId)
   }
 
+  getCompanyContacts(): Promise<Contact[]> {
+    return this.db.getCompanyContacts()
+  }
+
   // Return all contacts across all users (admin use)
   getAllContacts(): Promise<Contact[]> {
     return this.db.getAllContacts()

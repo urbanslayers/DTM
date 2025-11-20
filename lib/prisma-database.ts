@@ -499,6 +499,32 @@ export class PrismaDatabase {
     })) as Contact[]
   }
 
+  async getCompanyContacts(): Promise<Contact[]> {
+    const contacts = await this.prisma.contact.findMany({
+      where: {
+        OR: [
+          { category: 'company' },
+          {
+            user: {
+              role: 'admin',
+            },
+          },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    return contacts.map((contact: any) => ({
+      id: contact.id,
+      userId: contact.userId,
+      name: contact.name,
+      phoneNumber: contact.phoneNumber,
+      email: contact.email || undefined,
+      category: contact.category as "company" | "personal",
+      createdAt: contact.createdAt,
+    })) as Contact[]
+  }
+
   // Return all contacts across all users (admin use)
   async getAllContacts(): Promise<Contact[]> {
     const contacts = await this.prisma.contact.findMany({
