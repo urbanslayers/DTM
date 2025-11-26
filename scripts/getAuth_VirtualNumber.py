@@ -4,8 +4,8 @@ import sys
 from typing import Optional
 
 # === CONFIG: put your credentials here ===
-CLIENT_ID = "HvMPGqRoiELfaNLmGRfCqhlv5AXCzpGd"
-CLIENT_SECRET = "wN3g8Pi6JpxP6AZP"
+CLIENT_ID = "Add-your_client_id_here"
+CLIENT_SECRET = "Add-your_client_secret_here"
 
 # Token endpoint (products api v2 token)
 TOKEN_URL = "https://products.api.telstra.com/v2/oauth/token"

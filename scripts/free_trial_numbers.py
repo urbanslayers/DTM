@@ -17,8 +17,8 @@ import requests
 from typing import List, Optional
 
 # === CONFIG ===
-CLIENT_ID = os.environ.get("TELSTRA_CLIENT_ID", "HvMPGqRoiELfaNLmGRfCqhlv5AXCzpGd")
-CLIENT_SECRET = os.environ.get("TELSTRA_CLIENT_SECRET", "wN3g8Pi6JpxP6AZP")
+CLIENT_ID = os.environ.get("TELSTRA_CLIENT_ID", "Add-your_client_id_here")
+CLIENT_SECRET = os.environ.get("TELSTRA_CLIENT_SECRET", "Add-your_client_secret_here")
 
 TOKEN_URL = "https://products.api.telstra.com/v2/oauth/token"
 FREE_TRIAL_URL = "https://products.api.telstra.com/messaging/v3/free-trial-numbers"
