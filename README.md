@@ -378,6 +378,42 @@ TELSTRA_CLIENT_ID=your_production_client_id
 TELSTRA_CLIENT_SECRET=your_production_client_secret
 ```
 
+### Windows Server
+
+Follow these steps on a Windows Server host to build and run the app in production.
+
+1. Open PowerShell and change to the folder where the application is stored (replace the path as needed):
+```powershell
+cd C:\path\to\DTM
+```
+2. Copy the example environment file to create a working `.env`:
+```powershell
+Copy-Item .env.example .env
+```
+3. Edit the `.env` file and add your Telstra credentials:
+- `TELSTRA_CLIENT_ID=your_telstra_client_id`
+- `TELSTRA_CLIENT_SECRET=your_telstra_client_secret`
+
+4. Install production dependencies:
+```powershell
+npm install
+```
+5. Generate the Prisma client:
+```powershell
+npx prisma generate
+```
+6. Build and start the application:
+```powershell
+npm run build
+npm start
+```
+7. (One-time) Open a new PowerShell window, change to the `scripts` directory and create the initial admin user:
+```powershell
+cd scripts
+node create-admin-users.js
+```
+
+
 ## 🔧 Development
 
 ### Code Structure
