@@ -1,5 +1,7 @@
 # DTM Messaging Application
 
+![Desktop Messaging screenshot](public/desktop-messaging.png)
+
 A comprehensive messaging platform built with Next.js and TypeScript that integrates with the Telstra API for SMS and MMS messaging. This application provides a desktop-like interface for managing contacts, templates, messages, and includes advanced features like message scheduling, rules, and real-time notifications.
 
 ## 🚀 Features
