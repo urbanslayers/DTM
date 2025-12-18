@@ -168,7 +168,7 @@ class WebSocketManager {
     // Then start regular collection every 5 seconds
     this.metricsInterval = setInterval(() => {
       this.collectAndBroadcastMetrics()
-    }, 5000)
+    }, 50000)
   }
 
   private async collectAndBroadcastMetrics() {
