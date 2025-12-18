@@ -70,7 +70,7 @@ app.prepare().then(() => {
     path: "/socket.io",
     transports: ['websocket', 'polling'],
     pingTimeout: 10000,
-    pingInterval: 5000,
+    pingInterval: 50000,
   })
 
   // Initialize WebSocket manager with the Socket.IO instance
